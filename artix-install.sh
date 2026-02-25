@@ -17,29 +17,21 @@ fi
 
 echo "[*] Unmounting any leftover mounts on $DISK..."
 
+echo "[*] Preparing $DISK for partitioning..."
+
+swapoff -a
 
 umount -R /mnt 2>/dev/null || true
 rm -rf /mnt
 mkdir -p /mnt/
 
-for part in $(lsblk -ln -o NAME "$DISK" | tail -n +2); do
-    echo "[*] Unmounting /dev/$part ..."
-    umount -R "/dev/$part" 2>/dev/null || true
+for p in $(lsblk -ln -o NAME "$DISK" | tail -n +2); do
+    umount -l "/dev/$p" 2>/dev/null || true
 done
 
-echo "[*] Killing processes using $DISK ..."
-fuser -k "$DISK" 2>/dev/null || true
+fuser -km "$DISK" 2>/dev/null || true
 
-if mount | grep -q "$DISK"; then
-    echo "[!] Some partitions are still mounted. Attempting lazy unmount..."
-    for part in $(lsblk -ln -o NAME "$DISK" | tail -n +2); do
-        umount -l "/dev/$part" 2>/dev/null || true
-    done
-fi
-
-echo "[*] Cleanup complete. Proceeding with partitioning..."
-
-echo "[*] Cleanup complete. Proceeding with partitioning..."
+echo "[*] Disk $DISK ready."
 
 echo "[*] Cleanup complete. Proceeding with partitioning..."
 

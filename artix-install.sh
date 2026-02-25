@@ -1,4 +1,10 @@
 #!/bin/bash
+
+echo "[*] Unmounting any leftover mounts..."
+umount -R /mnt 2>/dev/null || true
+rm -rf /mnt
+mkdir -p /mnt/
+
 DISK=$(lsblk -dpno NAME,SIZE | grep -E "/dev/sd|/dev/nvme" | \
 whiptail --menu "Select disk" 20 60 10 \
 $(lsblk -dpno NAME,SIZE | grep -E "/dev/sd|/dev/nvme") \
@@ -61,7 +67,7 @@ opendoas \
 git \
 pipewire-alsa \
 pipewire-pulse \
-pipewire-jack
+pipewire-jack \
 wireplumber \
 rtkit
 
@@ -82,7 +88,7 @@ LOCALE=$(whiptail \
 --backtitle "Artix Linux Minimal Installer v1.0" \
 --title "Step 3: Locale Selection" \
 --menu "Select your locale:" \
-20 60 15 \
+40 80 20 \
 $LOCALE_LIST \
 3>&1 1>&2 2>&3)
 
@@ -94,10 +100,9 @@ echo "LANG=$LOCALE" > /etc/locale.conf
 
 echo "[*] Enabling services..."
 
-dinitctl enable elogind
-dinitctl enable ntpd
-dinitctl enable NetworkManager
-dinitctl enable rtkit
+/usr/bin/dinitctl enable ntpd
+/usr/bin/dinitctl start ntpd
+/usr/bin/dinitctl enable NetworkManager
 
 echo "[*] Configuring GRUB..."
 
@@ -126,6 +131,7 @@ EOF
 
 echo "[*] Unmounting..."
 
-umount -R /mnt
+umount -R /mnt 2>/dev/null || true
 
 echo "[✓] DONE. Reboot."
+reboot

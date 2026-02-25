@@ -54,6 +54,7 @@ mount "$HOME" /mnt/home
 
 dinitctl start ntpd || true
 
+# Install base system + extras
 basestrap /mnt \
 base \
 base-devel \
@@ -69,6 +70,7 @@ vim \
 fastfetch \
 networkmanager \
 networkmanager-dinit \
+dbus-dinit \
 opendoas \
 git \
 pipewire \
@@ -76,20 +78,21 @@ pipewire-alsa \
 pipewire-pulse \
 pipewire-jack \
 wireplumber \
-rtkit
+rtkit-daemon
 
+# Generate fstab
 fstabgen -U /mnt >> /mnt/etc/fstab
 
-export USERNAME
-
+# Configure system inside chroot
 artix-chroot /mnt /bin/bash <<EOF
 set -e
 export TERM=xterm-256color
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
+# Locale selection
 LOCALE_LIST=\$(grep 'UTF-8' /etc/locale.gen | sed 's/^#//' | awk '{print \$1 " locale"}')
 LOCALE=\$(whiptail \
---backtitle "Artix Linux Minimal Installer v2.0" \
+--backtitle "Artix Linux Minimal Installer v2.1" \
 --title "Select Locale" \
 --menu "Select your locale:" \
 40 80 20 \
@@ -100,32 +103,33 @@ sed -i "s/^#\$LOCALE UTF-8/\$LOCALE UTF-8/" /etc/locale.gen
 locale-gen
 echo "LANG=\$LOCALE" > /etc/locale.conf
 
+# Enable dinit services by symlink (works inside chroot)
 mkdir -p /etc/dinit.d/boot.d
 ln -sf /etc/dinit.d/elogind /etc/dinit.d/boot.d/elogind
 ln -sf /etc/dinit.d/ntpd /etc/dinit.d/boot.d/ntpd
 ln -sf /etc/dinit.d/NetworkManager /etc/dinit.d/boot.d/NetworkManager
 ln -sf /etc/dinit.d/rtkit-daemon /etc/dinit.d/boot.d/rtkit-daemon
 
+# Configure GRUB
 sed -i 's/#GRUB_DISABLE_OS_PROBER=false/GRUB_DISABLE_OS_PROBER=false/' /etc/default/grub || true
 echo 'GRUB_DISABLE_OS_PROBER=false' >> /etc/default/grub
-
 grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=grub
 grub-mkconfig -o /boot/grub/grub.cfg
-
-echo "[*] Set root password:"
-passwd
-
-USERNAME=\$(whiptail --inputbox "Enter your username:" 10 60 "user" 3>&1 1>&2 2>&3)
-useradd -m -G wheel -s /bin/bash "\$USERNAME"
-usermod -aG audio,video,realtime "\$USERNAME"
-echo "permit :wheel" > /etc/doas.conf
-
-echo "[*] Set password for \$USERNAME"
-passwd "\$USERNAME"
 EOF
 
+# Interactive root password
+artix-chroot /mnt /bin/bash -c "echo '[*] Set root password:' && passwd"
+
+# Interactive user creation
+USERNAME=$(whiptail --inputbox "Enter your username:" 10 60 "user" 3>&1 1>&2 2>&3)
+artix-chroot /mnt /bin/bash -c "useradd -m -G wheel -s /bin/bash $USERNAME"
+artix-chroot /mnt /bin/bash -c "usermod -aG audio,video,realtime $USERNAME"
+echo "permit :wheel" > /mnt/etc/doas.conf
+artix-chroot /mnt /bin/bash -c "echo '[*] Set password for $USERNAME' && passwd $USERNAME"
+
+# Cleanup and reboot
 umount -R /mnt 2>/dev/null || true
 sync
-
 echo "[✓] Installation complete. Rebooting..."
+reboot..."
 reboot

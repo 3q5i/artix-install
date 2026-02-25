@@ -14,10 +14,32 @@ fi
 # ------------------------
 # Cleanup previous mounts
 # ------------------------
-echo "[*] Unmounting any leftover mounts..."
+echo "[*] Unmounting any leftover mounts on $DISK..."
+
+# Unmount /mnt first (previous failed install)
 umount -R /mnt 2>/dev/null || true
 rm -rf /mnt
 mkdir -p /mnt/
+
+# Unmount all partitions on the target disk
+for part in $(lsblk -ln -o NAME "$DISK" | tail -n +2); do
+    echo "[*] Unmounting /dev/$part ..."
+    umount -R "/dev/$part" 2>/dev/null || true
+done
+
+# Kill lingering processes using the disk
+echo "[*] Killing processes using $DISK ..."
+fuser -k "$DISK" 2>/dev/null || true
+
+# Double-check mounts
+if mount | grep -q "$DISK"; then
+    echo "[!] Some partitions are still mounted. Attempting lazy unmount..."
+    for part in $(lsblk -ln -o NAME "$DISK" | tail -n +2); do
+        umount -l "/dev/$part" 2>/dev/null || true
+    done
+fi
+
+echo "[*] Cleanup complete. Proceeding with partitioning..."
 
 # ------------------------
 # Select disk

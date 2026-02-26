@@ -11,7 +11,6 @@ fi
 clear
 TITLE="Artix Linux Installer"
 
-# Helper for whiptail passwords
 get_password() {
     local prompt="$1"
     local pw=""
@@ -42,7 +41,20 @@ $(lsblk -dpno NAME,SIZE | grep -v loop | awk '{print $1 " " $2}') \
 
 whiptail --title "$TITLE" --yesno "ALL DATA ON $DISK WILL BE DESTROYED" 10 60 || exit 1
 
-# 2. Cleanup & Partitioning
+# 2. File System & Swap Choices
+FS_CHOICE=$(whiptail --title "$TITLE" --menu "Select Root File System" 15 60 4 \
+"ext4" "Standard Ext4" \
+"btrfs" "B-Tree Filesystem" \
+"xfs" "XFS Filesystem" \
+"f2fs" "Flash-Friendly Filesystem" 3>&1 1>&2 2>&3)
+
+SWAP_CHOICE=$(whiptail --title "$TITLE" --menu "Select Swap Configuration" 15 60 4 \
+"Zram" "Use zramen (Compressed RAM)" \
+"Swapfile" "Create a 4GB Swapfile" \
+"Both" "Zram + 4GB Swapfile" \
+"None" "No Swap" 3>&1 1>&2 2>&3)
+
+# 3. Cleanup & Partitioning
 umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
 wipefs -af "$DISK"
@@ -73,25 +85,52 @@ else
     ROOT="${DISK}2"
 fi
 
+# Format EFI
 mkfs.fat -F32 "$EFI"
-mkfs.ext4 -F "$ROOT"
+
+# Format Root based on choice
+case $FS_CHOICE in
+    ext4)  mkfs.ext4 -F "$ROOT" ;;
+    btrfs) mkfs.btrfs -f "$ROOT" ;;
+    xfs)   mkfs.xfs -f "$ROOT" ;;
+    f2fs)  mkfs.f2fs -f "$ROOT" ;;
+esac
 
 mount "$ROOT" /mnt
 mkdir -p /mnt/boot
 mount "$EFI" /mnt/boot
 
-# 3. Basestrap
-basestrap /mnt \
-base base-devel linux linux-firmware intel-ucode amd-ucode \
-dinit elogind-dinit dbus-dinit doas vi \
-networkmanager networkmanager-dinit \
-pipewire pipewire-alsa pipewire-pulse wireplumber \
-zramen zramen-dinit grub efibootmgr \
-ntfs-3g dosfstools mtools libnewt
+# 4. Swapfile Creation (if selected)
+if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
+    echo "Creating 4GB swapfile..."
+    dd if=/dev/zero of=/mnt/swapfile bs=1M count=4096 status=progress
+    chmod 0600 /mnt/swapfile
+    mkswap /mnt/swapfile
+fi
+
+# 5. Build Package List
+BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit grub efibootmgr ntfs-3g dosfstools mtools libnewt"
+AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
+
+FS_PKGS=""
+[[ "$FS_CHOICE" == "btrfs" ]] && FS_PKGS="btrfs-progs"
+[[ "$FS_CHOICE" == "xfs" ]]   && FS_PKGS="xfsprogs"
+[[ "$FS_CHOICE" == "f2fs" ]]  && FS_PKGS="f2fs-tools"
+
+SWAP_PKGS=""
+[[ "$SWAP_CHOICE" == "Zram" || "$SWAP_CHOICE" == "Both" ]] && SWAP_PKGS="zramen zramen-dinit"
+
+# 6. Basestrap
+basestrap /mnt $BASE_PKGS $AUDIO_PKGS $FS_PKGS $SWAP_PKGS
 
 fstabgen -U /mnt >> /mnt/etc/fstab
 
-# 4. Desktop Environment Selection
+# Add swapfile to fstab if it was created
+if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
+    echo "/swapfile none swap defaults 0 0" >> /mnt/etc/fstab
+fi
+
+# 7. Desktop Environment Selection
 DE_CHOICE=$(whiptail --title "$TITLE" --menu "Select Desktop Environment" 20 70 6 \
 "Plasma" "KDE Plasma Full Suite" \
 "XFCE" "XFCE4 + Goodies (Lightweight)" \
@@ -100,7 +139,7 @@ DE_CHOICE=$(whiptail --title "$TITLE" --menu "Select Desktop Environment" 20 70 
 "Moksha" "Moksha Desktop (Enlightenment fork)" \
 "None" "Standard CLI only" 3>&1 1>&2 2>&3)
 
-# 5. Localization (Whiptail menus allow jumping by typing the first letter)
+# 8. Localization
 LOCALE=$(whiptail --title "$TITLE" --menu "Select locale (Type letter to jump)" 20 70 10 \
 $(grep "UTF-8" /mnt/usr/share/i18n/SUPPORTED | awk '{print $1 " " $1}') 3>&1 1>&2 2>&3)
 LOCALE=$(validate_input "$LOCALE")
@@ -116,7 +155,7 @@ TIMEZONE=$(validate_input "$TIMEZONE")
 artix-chroot /mnt ln -sf /usr/share/zoneinfo/"$TIMEZONE" /etc/localtime
 artix-chroot /mnt hwclock --systohc
 
-# 6. Hostname & User Configuration
+# 9. Hostname & User Configuration
 HOSTNAME=$(whiptail --title "$TITLE" --inputbox "Enter hostname" 10 60 artix 3>&1 1>&2 2>&3)
 HOSTNAME=$(validate_input "$HOSTNAME")
 echo "$HOSTNAME" > /mnt/etc/hostname
@@ -131,12 +170,11 @@ USER_PW=$(get_password "Enter password for $USERNAME")
 artix-chroot /mnt useradd -m -G wheel,audio,video,storage "$USERNAME"
 echo "$USERNAME:$USER_PW" | artix-chroot /mnt chpasswd
 
-# Setup doas
 echo "permit persist :wheel" > /mnt/etc/doas.conf
 artix-chroot /mnt chown root:root /etc/doas.conf
 artix-chroot /mnt chmod 0400 /etc/doas.conf
 
-# 7. Install Desktop Environment
+# 10. Install Desktop Environment
 case $DE_CHOICE in
     Plasma) artix-chroot /mnt pacman -S --noconfirm plasma kde-applications sddm-dinit ;;
     XFCE)   artix-chroot /mnt pacman -S --noconfirm xfce4 xfce4-goodies lightdm-dinit ;;
@@ -146,9 +184,8 @@ case $DE_CHOICE in
     None)   echo "No DE selected." ;;
 esac
 
-# 8. Services & Bootloader
+# 11. Services & Bootloader
 artix-chroot /mnt mkdir -p /etc/dinit.d/boot.d
-# Enable display manager if a DE was chosen
 [[ "$DE_CHOICE" == "Plasma" || "$DE_CHOICE" == "LXQt" ]] && DM="sddm"
 [[ "$DE_CHOICE" == "XFCE" || "$DE_CHOICE" == "MATE" || "$DE_CHOICE" == "Moksha" ]] && DM="lightdm"
 
@@ -159,9 +196,18 @@ done
 artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Artix
 artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 
-# 9. Cleanup
+# 12. Finish
 umount -R /mnt
 sync
 
-whiptail --title "$TITLE" --msgbox "Installation complete! Rebooting..." 10 60
-reboot
+if whiptail --title "$TITLE" --yesno "Installation complete! Would you like to reboot now?" 10 60; then
+    reboot
+else
+    clear
+    echo "================================================================"
+    echo "Installation finished. You are still in the live environment."
+    echo "You can chroot into your new system to make additional changes:"
+    echo "  artix-chroot /mnt"
+    echo "When you are done, simply type 'reboot'."
+    echo "================================================================"
+fi

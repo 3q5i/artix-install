@@ -31,19 +31,20 @@ $(lsblk -dpno NAME,SIZE | grep -v loop | awk '{print $1 " " $2}') \
 
 whiptail --title "$TITLE" --yesno "ALL DATA ON $DISK WILL BE DESTROYED" 10 60 || exit 1
 
-# 2. Cleanup & Partitioning (Using fdisk)
+# 2. Cleanup & Partitioning
 umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
 wipefs -af "$DISK"
 
-# Scripting fdisk: g (GPT), n (new), 1 (partition 1), default start, +512M, 
-# t (type), 1 (EFI), n (new), 2 (partition 2), default start/end, w (write)
+# fdisk logic: 
+# g (GPT), n (new), 1 (partition 1), [default start], +1G (2026 standard),
+# t (type), 1 (EFI System), n (new), 2 (partition 2), [default start], [default end], w (write)
 fdisk "$DISK" <<EOF
 g
 n
 1
 
-+512M
++1G
 t
 1
 n
@@ -71,7 +72,8 @@ mount "$ROOT" /mnt
 mkdir -p /mnt/boot
 mount "$EFI" /mnt/boot
 
-# 3. Base Installation
+# 3. Basestrap
+# Fixed: whiptail -> libnewt
 basestrap /mnt \
 base base-devel \
 linux linux-firmware intel-ucode amd-ucode \
@@ -82,17 +84,16 @@ pipewire pipewire-alsa pipewire-pulse wireplumber \
 zramen zramen-dinit \
 grub efibootmgr \
 ntfs-3g dosfstools mtools \
-whiptail
+libnewt 
 
 fstabgen -U /mnt >> /mnt/etc/fstab
 
 # 4. Network Migration
-# This copies your current Wi-Fi/Ethernet profiles to the target system
 mkdir -p /mnt/etc/NetworkManager/system-connections/
 cp -L /etc/NetworkManager/system-connections/* /mnt/etc/NetworkManager/system-connections/ 2>/dev/null || true
 chmod 600 /mnt/etc/NetworkManager/system-connections/* 2>/dev/null || true
 
-# 5. Localization & Timezone
+# 5. Localization
 LOCALE=$(whiptail --title "$TITLE" --menu "Select locale" 20 70 10 \
 $(grep "UTF-8" /mnt/usr/share/i18n/SUPPORTED | awk '{print $1 " " $1}') 3>&1 1>&2 2>&3)
 LOCALE=$(validate_input "$LOCALE")
@@ -111,17 +112,20 @@ HOSTNAME=$(whiptail --title "$TITLE" --inputbox "Enter hostname" 10 60 artix 3>&
 HOSTNAME=$(validate_input "$HOSTNAME")
 echo "$HOSTNAME" > /mnt/etc/hostname
 
+echo "Setting root password..."
 arch-chroot /mnt passwd
+
 USERNAME=$(whiptail --title "$TITLE" --inputbox "Enter username" 10 60 user 3>&1 1>&2 2>&3)
 USERNAME=$(validate_input "$USERNAME")
 arch-chroot /mnt useradd -m -G wheel,audio,video,storage "$USERNAME"
+echo "Setting password for $USERNAME..."
 arch-chroot /mnt passwd "$USERNAME"
 
 echo "permit persist :wheel" > /mnt/etc/doas.conf
 arch-chroot /mnt chown root:root /etc/doas.conf
 arch-chroot /mnt chmod 0400 /etc/doas.conf
 
-# 7. Dinit Services
+# 7. Services
 arch-chroot /mnt mkdir -p /etc/dinit.d/boot.d
 for svc in dbus NetworkManager elogind zramen; do
     arch-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/

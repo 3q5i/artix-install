@@ -494,10 +494,11 @@ case "$BL_CHOICE" in
                 --loader '\\EFI\\limine\\BOOTX64.EFI'
         "
         # Resolve values on the host before writing the config — no heredoc escaping issues
-        KERNEL_IMG=$(ls /mnt/boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/mnt||')
-        INITRD_IMG=$(ls /mnt/boot/initramfs-*.img 2>/dev/null | grep -v fallback | head -1 | sed 's|/mnt||')
+        # Strip /mnt/boot — EFI partition IS /boot so limine paths are relative to it
+        # e.g. /mnt/boot/vmlinuz-linux → /vmlinuz-linux
+        KERNEL_IMG=$(ls /mnt/boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/mnt/boot||')
+        INITRD_IMG=$(ls /mnt/boot/initramfs-*.img 2>/dev/null | grep -v fallback | head -1 | sed 's|/mnt/boot||')
         ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
-        # Write config with printf so variables expand cleanly without backslash confusion
         printf 'timeout: 5
 
 /Artix Linux

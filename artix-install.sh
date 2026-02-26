@@ -9,7 +9,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 clear
-TITLE="Artix Master Installer (Plasma Audio Fix)"
+TITLE="Artix Master Installer"
 
 # --- HELPERS ---
 get_confirmed_password() {
@@ -30,7 +30,6 @@ get_confirmed_password() {
 
 # --- STAGE 1: INPUTS ---
 
-# awk prints name and size on separate lines so whiptail gets them as distinct args
 mapfile -t DISKLIST < <(lsblk -dpno NAME,SIZE | grep -v loop | awk '{print $1; print $2}')
 DISK=$(whiptail --title "$TITLE" --menu "Select Disk" 20 70 10 \
     "${DISKLIST[@]}" 3>&1 1>&2 2>&3)
@@ -49,6 +48,19 @@ SWAP_CHOICE=$(whiptail --title "$TITLE" --menu "Swap Configuration" 15 60 4 \
     "Both"     "Zram + Swapfile" \
     "None"     "No Swap" 3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
+
+# Swap size — only ask if swapfile is involved
+SWAP_SIZE_MB=2048
+if [[ "$SWAP_CHOICE" =~ Swapfile|Both ]]; then
+    SWAP_SIZE_GB=$(whiptail --title "$TITLE" --menu "Swapfile Size" 15 60 5 \
+        "1"  "1 GB" \
+        "2"  "2 GB" \
+        "4"  "4 GB  (recommended)" \
+        "8"  "8 GB" \
+        "16" "16 GB" 3>&1 1>&2 2>&3)
+    [ $? -ne 0 ] && exit 1
+    SWAP_SIZE_MB=$(( SWAP_SIZE_GB * 1024 ))
+fi
 
 LOCALE=$(whiptail --title "$TITLE" --menu "Select locale" 20 70 10 \
     $(grep "UTF-8" /usr/share/i18n/SUPPORTED | awk '{print $1 " " $1}') 3>&1 1>&2 2>&3)
@@ -76,22 +88,27 @@ done
 
 USER_PW=$(get_confirmed_password "User Password")
 
-DE_CHOICE=$(whiptail --title "$TITLE" --menu "Desktop Environment" 20 70 10 \
-    "Plasma"      "KDE Plasma" \
-    "XFCE"        "XFCE4" \
-    "LXQt"        "LXQt" \
-    "i3"          "i3wm" \
-    "XMonad"      "XMonad" \
-    "WindowMaker" "WindowMaker" \
-    "Moksha"      "Moksha" 3>&1 1>&2 2>&3)
+# Multi-select DE/WM — whiptail checklist returns space-separated quoted selections
+DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
+    "Select Desktop Environments / WMs (space to select, enter to confirm)" 22 70 10 \
+    "Plasma"      "KDE Plasma"          OFF \
+    "XFCE"        "XFCE4"               OFF \
+    "LXQt"        "LXQt"                OFF \
+    "i3"          "i3wm"                OFF \
+    "XMonad"      "XMonad"              OFF \
+    "WindowMaker" "WindowMaker (built from source)" OFF \
+    "Moksha"      "Moksha"              OFF \
+    3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
+# Strip quotes whiptail adds around each selection
+DE_CHOICES=$(echo "$DE_CHOICES" | tr -d '"')
+[ -z "$DE_CHOICES" ] && { whiptail --title "$TITLE" --msgbox "No environment selected. Exiting." 8 50; exit 1; }
 
 BL_CHOICE=$(whiptail --title "$TITLE" --menu "Bootloader" 15 70 3 \
     "grub"   "GRUB2 (most compatible)" \
     "limine" "Limine (fast, minimal)" \
     "refind" "rEFInd (graphical picker)" 3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
-
 
 # --- STAGE 2: DISK OPERATIONS ---
 umount -R /mnt 2>/dev/null || true
@@ -138,9 +155,9 @@ if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
         # CoW must be disabled before allocation or the swapfile won't activate
         truncate -s 0 /mnt/swapfile
         chattr +C /mnt/swapfile
-        fallocate -l 4G /mnt/swapfile
+        fallocate -l "${SWAP_SIZE_GB}G" /mnt/swapfile
     else
-        dd if=/dev/zero of=/mnt/swapfile bs=1M count=4096 status=progress
+        dd if=/dev/zero of=/mnt/swapfile bs=1M count="$SWAP_SIZE_MB" status=progress
     fi
     chmod 600 /mnt/swapfile
     mkswap /mnt/swapfile
@@ -157,7 +174,6 @@ else
     GPU_PKGS="mesa vulkan-intel xf86-video-intel"
 fi
 
-# rtkit-dinit does not exist — rtkit ships its own dinit service file
 BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode \
     dinit elogind-dinit dbus-dinit doas vi \
     networkmanager networkmanager-dinit wpa_supplicant \
@@ -168,12 +184,15 @@ BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode \
 
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
 
+# lightdm is the unified greeter for all DEs
+DE_PKGS="lightdm lightdm-dinit lightdm-gtk-greeter"
+
 # --- STAGE 5: BASESTRAP ---
-basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS
+basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS $DE_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
 
 # --- STAGE 6: CHROOT CONFIGURATION ---
-# Passwords are base64-encoded so special chars ($, !, \) don't break anything
+# Passwords base64-encoded so special chars ($, !, \) don't break the heredoc
 ROOT_PW_B64=$(printf '%s' "$ROOT_PW" | base64)
 USER_PW_B64=$(printf '%s' "$USER_PW" | base64)
 
@@ -219,16 +238,14 @@ artix-chroot /mnt /root/configure.sh
 rm /mnt/root/configure.sh
 
 # --- STAGE 7: AUDIO SETUP ---
-# .xprofile is skipped by SDDM on Wayland (Plasma default) — use Plasma autostart-scripts
-# which run on both X11 and Wayland. Keep .xprofile + dinit services as fallback.
+# Plasma autostart-scripts run on both Wayland and X11 (unlike .xprofile)
+# .xprofile kept as fallback for other DEs
 
 mkdir -p /mnt/home/"$USERNAME"
 
-# chown by name fails outside chroot — resolve numeric UID/GID from chroot passwd
 USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
 USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
 
-# Plasma autostart script (works on Wayland + X11)
 mkdir -p /mnt/home/"$USERNAME"/.config/autostart-scripts
 cat > /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh << 'AUTOSTART'
 #!/bin/bash
@@ -239,9 +256,7 @@ pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
 pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
 AUTOSTART
 chmod +x /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh
-chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/autostart-scripts
 
-# .xprofile fallback for non-Plasma / X11 DEs
 cat > /mnt/home/"$USERNAME"/.xprofile << 'XPROFILE'
 #!/bin/bash
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -250,9 +265,7 @@ sleep 1
 pgrep -x wireplumber    >/dev/null || /usr/bin/wireplumber &
 pgrep -x pipewire-pulse >/dev/null || /usr/bin/pipewire-pulse &
 XPROFILE
-chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.xprofile
 
-# User dinit service files (TTY login fallback)
 mkdir -p /mnt/home/"$USERNAME"/.config/dinit.d
 
 cat > /mnt/home/"$USERNAME"/.config/dinit.d/pipewire << 'DSVC'
@@ -275,9 +288,7 @@ depends-on = pipewire
 restart = true
 DSVC
 
-chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/dinit.d
-
-# Final ownership fix — everything in home must belong to the user, not root
+# Final recursive chown — covers everything including xdg dirs created as root
 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
 # --- STAGE 8: ZRAM ---
@@ -287,42 +298,64 @@ if [[ "$SWAP_CHOICE" =~ Zram|Both ]]; then
 fi
 
 # --- STAGE 9: DESKTOP ENVIRONMENT ---
-case "$DE_CHOICE" in
-    Plasma)
-        artix-chroot /mnt pacman -S --noconfirm plasma kde-applications sddm sddm-dinit \
-            xdg-desktop-portal-kde plasma-pa
-        ;;
-    XFCE)
-        artix-chroot /mnt pacman -S --noconfirm xfce4 xfce4-goodies \
-            lightdm lightdm-dinit lightdm-gtk-greeter xdg-desktop-portal-gtk
-        ;;
-    LXQt)
-        artix-chroot /mnt pacman -S --noconfirm lxqt sddm sddm-dinit
-        ;;
-    i3)
-        artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu \
-            lightdm lightdm-dinit lightdm-gtk-greeter xterm
-        ;;
-    XMonad)
-        artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib xmobar dmenu \
-            lightdm lightdm-dinit lightdm-gtk-greeter xterm
-        ;;
-    WindowMaker)
-        artix-chroot /mnt pacman -S --noconfirm windowmaker \
-            lightdm lightdm-dinit lightdm-gtk-greeter xterm
-        ;;
-    Moksha)
-        artix-chroot /mnt pacman -S --noconfirm moksha-artix \
-            lightdm lightdm-dinit lightdm-gtk-greeter
-        ;;
-esac
+# Iterate over each selected DE — DE_CHOICES is space-separated
+for DE in $DE_CHOICES; do
+    case "$DE" in
+        Plasma)
+            artix-chroot /mnt pacman -S --noconfirm \
+                plasma kde-applications sddm sddm-dinit \
+                xdg-desktop-portal-kde plasma-pa
+            ;;
+        XFCE)
+            artix-chroot /mnt pacman -S --noconfirm \
+                xfce4 xfce4-goodies xdg-desktop-portal-gtk
+            ;;
+        LXQt)
+            artix-chroot /mnt pacman -S --noconfirm lxqt
+            ;;
+        i3)
+            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm
+            ;;
+        XMonad)
+            artix-chroot /mnt pacman -S --noconfirm \
+                xmonad xmonad-contrib xmobar dmenu xterm
+            ;;
+        WindowMaker)
+            # WindowMaker is not in the Artix repos — build from source
+            artix-chroot /mnt pacman -S --noconfirm \
+                wget gcc make autoconf automake libtool \
+                libx11 libxext libxmu libxpm libxt libxft fontconfig libpng
+            artix-chroot /mnt bash -c "
+                set -e
+                cd /tmp
+                WM_VER=\$(curl -s https://windowmaker.org/pub/source/release/ \
+                    | grep -oP 'WindowMaker-[0-9.]+\.tar\.gz' | sort -V | tail -1)
+                wget -q https://windowmaker.org/pub/source/release/\$WM_VER
+                tar -xzf \$WM_VER
+                cd \${WM_VER%.tar.gz}
+                ./configure --prefix=/usr --sysconfdir=/etc --enable-modelock
+                make -j\$(nproc)
+                make install
+                cd /tmp && rm -rf \${WM_VER%.tar.gz} \$WM_VER
+            "
+            ;;
+        Moksha)
+            artix-chroot /mnt pacman -S --noconfirm moksha-artix
+            ;;
+    esac
+done
 
 # --- STAGE 10: DINIT SERVICES ---
 mkdir -p /mnt/etc/dinit.d/boot.d
-DM="lightdm"
-[[ "$DE_CHOICE" =~ Plasma|LXQt ]] && DM="sddm"
 
-# Service file names — not package names (dbus, not dbus-dinit; rtkit-daemon, not rtkit-dinit)
+# Determine display manager:
+# Plasma gets sddm; everything else uses lightdm (already installed in base)
+DM="lightdm"
+if echo "$DE_CHOICES" | grep -qw "Plasma" && ! echo "$DE_CHOICES" | grep -qwE "XFCE|LXQt|i3|XMonad|WindowMaker|Moksha"; then
+    DM="sddm"
+fi
+
+# Service file names — not package names
 for svc in dbus NetworkManager elogind haveged rtkit-daemon "$DM"; do
     if [ -f "/mnt/etc/dinit.d/$svc" ]; then
         artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
@@ -331,7 +364,8 @@ for svc in dbus NetworkManager elogind haveged rtkit-daemon "$DM"; do
     fi
 done
 
-[[ "$SWAP_CHOICE" =~ Zram|Both ]] && artix-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
+[[ "$SWAP_CHOICE" =~ Zram|Both ]] && \
+    artix-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
 
 # --- STAGE 11: BOOTLOADER ---
 case "$BL_CHOICE" in
@@ -346,7 +380,6 @@ case "$BL_CHOICE" in
 
     limine)
         artix-chroot /mnt pacman -S --noconfirm limine efibootmgr
-        # Install limine EFI binary to /boot/EFI/limine
         artix-chroot /mnt bash -c "
             mkdir -p /boot/EFI/limine
             cp /usr/share/limine/BOOTX64.EFI /boot/EFI/limine/
@@ -356,7 +389,6 @@ case "$BL_CHOICE" in
                 --label 'Limine' \
                 --loader '\\EFI\\limine\\BOOTX64.EFI'
         "
-        # Write limine.conf — gets the running kernel from /boot
         KERNEL_IMG=$(ls /mnt/boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/mnt||')
         INITRD_IMG=$(ls /mnt/boot/initramfs-*.img 2>/dev/null | grep -v fallback | head -1 | sed 's|/mnt||')
         ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
@@ -374,8 +406,6 @@ EOF
     refind)
         artix-chroot /mnt pacman -S --noconfirm refind efibootmgr
         artix-chroot /mnt refind-install
-        # refind-install auto-detects kernels — write a minimal refind_linux.conf
-        # so it passes the correct root UUID
         ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
         cat > /mnt/boot/refind_linux.conf << EOF
 "Boot with standard options"  "root=UUID=\$ROOT_UUID rw quiet"

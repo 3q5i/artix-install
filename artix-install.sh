@@ -50,15 +50,24 @@ SWAP_CHOICE=$(whiptail --title "$TITLE" --menu "Swap Configuration" 15 60 4 \
 [ $? -ne 0 ] && exit 1
 
 # Swap size — only ask if swapfile is involved
+# Detect half of RAM in GB as the recommended swap size
+RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
+# Clamp to at least 1 GB and at most 16 GB
+(( RAM_HALF_GB < 1  )) && RAM_HALF_GB=1
+(( RAM_HALF_GB > 16 )) && RAM_HALF_GB=16
+
 SWAP_SIZE_MB=2048
 if [[ "$SWAP_CHOICE" =~ Swapfile|Both ]]; then
-    SWAP_SIZE_GB=$(whiptail --title "$TITLE" --menu "Swapfile Size" 15 60 5 \
+    SWAP_SIZE_GB=$(whiptail --title "$TITLE" --menu "Swapfile Size (recommended: ${RAM_HALF_GB} GB = half your RAM)" 15 70 5 \
         "1"  "1 GB" \
         "2"  "2 GB" \
-        "4"  "4 GB  (recommended)" \
+        "4"  "4 GB" \
         "8"  "8 GB" \
         "16" "16 GB" 3>&1 1>&2 2>&3)
     [ $? -ne 0 ] && exit 1
+    # Default to recommended if user somehow gets an empty value
+    SWAP_SIZE_GB="${SWAP_SIZE_GB:-$RAM_HALF_GB}"
     SWAP_SIZE_MB=$(( SWAP_SIZE_GB * 1024 ))
 fi
 

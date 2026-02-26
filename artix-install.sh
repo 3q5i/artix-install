@@ -159,7 +159,7 @@ BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode \
     grub efibootmgr ntfs-3g dosfstools mtools \
     libnewt xorg-server xorg-xinit \
     haveged haveged-dinit xdg-user-dirs \
-    dbus rtkit rtkit-dinit"
+    dbus rtkit"
 
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
 

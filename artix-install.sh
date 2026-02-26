@@ -98,12 +98,12 @@ if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
     mkswap /mnt/swapfile
 fi
 
-# Detect GPU for Drivers
-GPU_PKGS="mesa lib32-mesa vulkan-intel lib32-vulkan-intel xf86-video-intel"
+# Detect GPU for Drivers (Simplified for Base Repos)
+GPU_PKGS="mesa vulkan-intel xf86-video-intel"
 if lspci | grep -iI "nvidia" > /dev/null; then
-    GPU_PKGS="nvidia nvidia-utils lib32-nvidia-utils nvidia-settings"
+    GPU_PKGS="nvidia nvidia-utils nvidia-settings"
 elif lspci | grep -iI "amd" > /dev/null; then
-    GPU_PKGS="mesa lib32-mesa xf86-video-amdgpu vulkan-radeon lib32-vulkan-radeon"
+    GPU_PKGS="mesa xf86-video-amdgpu vulkan-mesa-layers"
 fi
 
 BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit wpa_supplicant grub efibootmgr ntfs-3g dosfstools mtools libnewt xorg-server xorg-xinit"
@@ -153,13 +153,13 @@ case $DE_CHOICE in
     Moksha) artix-chroot /mnt pacman -S --noconfirm moksha-artix lightdm-dinit ;;
 esac
 
-# Services
+# Services (Dinit)
 artix-chroot /mnt mkdir -p /etc/dinit.d/boot.d
 DM=""
 [[ "$DE_CHOICE" =~ Plasma|LXQt ]] && DM="sddm"
 [[ "$DE_CHOICE" =~ XFCE|MATE|Moksha ]] && DM="lightdm"
 
-# Using NetworkManager (Capitalized as requested)
+# The working service names from your successful run
 for svc in dbus NetworkManager elogind zramen $DM; do
     [ -f "/mnt/etc/dinit.d/$svc" ] && artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
 done
@@ -171,5 +171,5 @@ artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 # --- FINISH ---
 umount -R /mnt
 sync
-whiptail --title "$TITLE" --msgbox "Installation complete! GPU, Network, and Audio auto-configured." 10 60
+whiptail --title "$TITLE" --msgbox "Installation complete! Hardware-specific drivers, Network, and Audio auto-configured." 10 60
 reboot

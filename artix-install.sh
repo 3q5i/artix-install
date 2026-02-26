@@ -36,9 +36,12 @@ umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
 wipefs -af "$DISK"
 
-# fdisk logic: 
-# g (GPT), n (new), 1 (partition 1), [default start], +1G (2026 standard),
-# t (type), 1 (EFI System), n (new), 2 (partition 2), [default start], [default end], w (write)
+# fdisk logic for 2026:
+# g: GPT label
+# n, 1, default, +1G: EFI Partition
+# t, 1: Set type to EFI System
+# n, 2, default, default: Root Partition
+# w: Write changes
 fdisk "$DISK" <<EOF
 g
 n
@@ -53,6 +56,8 @@ n
 
 w
 EOF
+
+
 
 udevadm settle
 sleep 2
@@ -73,7 +78,7 @@ mkdir -p /mnt/boot
 mount "$EFI" /mnt/boot
 
 # 3. Basestrap
-# Fixed: whiptail -> libnewt
+# libnewt provides whiptail
 basestrap /mnt \
 base base-devel \
 linux linux-firmware intel-ucode amd-ucode \
@@ -98,14 +103,14 @@ LOCALE=$(whiptail --title "$TITLE" --menu "Select locale" 20 70 10 \
 $(grep "UTF-8" /mnt/usr/share/i18n/SUPPORTED | awk '{print $1 " " $1}') 3>&1 1>&2 2>&3)
 LOCALE=$(validate_input "$LOCALE")
 echo "$LOCALE UTF-8" >> /mnt/etc/locale.gen
-arch-chroot /mnt locale-gen
+artix-chroot /mnt locale-gen
 echo "LANG=$LOCALE" > /mnt/etc/locale.conf
 
 TIMEZONE=$(whiptail --title "$TITLE" --menu "Select timezone" 20 70 10 \
 $(awk '/^[^#]/ {print $3 " " $3}' /mnt/usr/share/zoneinfo/zone.tab) 3>&1 1>&2 2>&3)
 TIMEZONE=$(validate_input "$TIMEZONE")
-arch-chroot /mnt ln -sf /usr/share/zoneinfo/"$TIMEZONE" /etc/localtime
-arch-chroot /mnt hwclock --systohc
+artix-chroot /mnt ln -sf /usr/share/zoneinfo/"$TIMEZONE" /etc/localtime
+artix-chroot /mnt hwclock --systohc
 
 # 6. Hostname & Users
 HOSTNAME=$(whiptail --title "$TITLE" --inputbox "Enter hostname" 10 60 artix 3>&1 1>&2 2>&3)
@@ -113,27 +118,27 @@ HOSTNAME=$(validate_input "$HOSTNAME")
 echo "$HOSTNAME" > /mnt/etc/hostname
 
 echo "Setting root password..."
-arch-chroot /mnt passwd
+artix-chroot /mnt passwd
 
 USERNAME=$(whiptail --title "$TITLE" --inputbox "Enter username" 10 60 user 3>&1 1>&2 2>&3)
 USERNAME=$(validate_input "$USERNAME")
-arch-chroot /mnt useradd -m -G wheel,audio,video,storage "$USERNAME"
+artix-chroot /mnt useradd -m -G wheel,audio,video,storage "$USERNAME"
 echo "Setting password for $USERNAME..."
-arch-chroot /mnt passwd "$USERNAME"
+artix-chroot /mnt passwd "$USERNAME"
 
 echo "permit persist :wheel" > /mnt/etc/doas.conf
-arch-chroot /mnt chown root:root /etc/doas.conf
-arch-chroot /mnt chmod 0400 /etc/doas.conf
+artix-chroot /mnt chown root:root /etc/doas.conf
+artix-chroot /mnt chmod 0400 /etc/doas.conf
 
-# 7. Services
-arch-chroot /mnt mkdir -p /etc/dinit.d/boot.d
+# 7. Dinit Services
+artix-chroot /mnt mkdir -p /etc/dinit.d/boot.d
 for svc in dbus NetworkManager elogind zramen; do
-    arch-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
+    artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
 done
 
 # 8. Bootloader
-arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Artix
-arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Artix
+artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 
 # 9. Finish
 umount -R /mnt

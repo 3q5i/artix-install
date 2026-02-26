@@ -3,14 +3,12 @@
 set -e
 set -o pipefail
 
+TITLE="Artix Linux Installer"
+
 if [ "$EUID" -ne 0 ]; then
     echo "Run as root."
     exit 1
 fi
-
-clear
-
-TITLE="Artix Linux Installer"
 
 validate_input() {
     local input="$1"
@@ -34,15 +32,13 @@ whiptail --title "$TITLE" --yesno "ALL DATA ON $DISK WILL BE DESTROYED" 10 60 ||
 umount -R /mnt 2>/dev/null || true
 swapoff -a 2>/dev/null || true
 
-sgdisk --zap-all "$DISK"
 wipefs -af "$DISK"
 
-sgdisk -n 1:0:+512M -t 1:ef00 "$DISK"
-sgdisk -n 2:0:0 -t 2:8300 "$DISK"
+printf "label: gpt\n,512M,U\n,,L\n" | sfdisk "$DISK"
 
 partprobe "$DISK"
 udevadm settle
-sleep 1
+sleep 2
 
 if [[ "$DISK" == *"nvme"* ]]; then
     EFI="${DISK}p1"
@@ -61,9 +57,9 @@ mount "$EFI" /mnt/boot
 
 basestrap /mnt \
 base base-devel \
-linux linux-firmware intel-ucode \
-dinit elogind-dinit dbus-dinit \
-doas vi \
+linux linux-firmware \
+dinit elogind-dinit \
+bash doas vi \
 networkmanager networkmanager-dinit \
 pipewire pipewire-alsa pipewire-pulse wireplumber \
 zramen \
@@ -75,28 +71,28 @@ fstabgen -U /mnt >> /mnt/etc/fstab
 
 LOCALE=$(whiptail \
 --title "$TITLE" \
---menu "Select locale" 20 70 10 \
-$(grep "UTF-8" /mnt/usr/share/i18n/SUPPORTED | head -20 | awk '{print $1 " " $1}') \
+--menu "Select locale" 25 70 15 \
+$(grep "UTF-8" /mnt/etc/locale.gen | sed 's/^#//' | awk '{print $1 " locale"}') \
 3>&1 1>&2 2>&3)
 
 LOCALE=$(validate_input "$LOCALE")
 
-echo "$LOCALE UTF-8" >> /mnt/etc/locale.gen
+sed -i "s/^#$LOCALE UTF-8/$LOCALE UTF-8/" /mnt/etc/locale.gen
 
-arch-chroot /mnt locale-gen
+artix-chroot /mnt locale-gen
 
 echo "LANG=$LOCALE" > /mnt/etc/locale.conf
 
 TIMEZONE=$(whiptail \
 --title "$TITLE" \
---menu "Select timezone" 20 70 10 \
-$(timedatectl list-timezones | head -20 | awk '{print $1 " " $1}') \
+--menu "Select timezone" 25 70 15 \
+$(timedatectl list-timezones | awk '{print $1 " tz"}') \
 3>&1 1>&2 2>&3)
 
 TIMEZONE=$(validate_input "$TIMEZONE")
 
-arch-chroot /mnt ln -sf /usr/share/zoneinfo/"$TIMEZONE" /etc/localtime
-arch-chroot /mnt hwclock --systohc
+artix-chroot /mnt ln -sf /usr/share/zoneinfo/"$TIMEZONE" /etc/localtime
+artix-chroot /mnt hwclock --systohc
 
 HOSTNAME=$(whiptail \
 --title "$TITLE" \
@@ -107,7 +103,8 @@ HOSTNAME=$(validate_input "$HOSTNAME")
 
 echo "$HOSTNAME" > /mnt/etc/hostname
 
-arch-chroot /mnt passwd
+whiptail --title "$TITLE" --msgbox "Set ROOT password" 8 40
+artix-chroot /mnt passwd
 
 USERNAME=$(whiptail \
 --title "$TITLE" \
@@ -116,28 +113,26 @@ USERNAME=$(whiptail \
 
 USERNAME=$(validate_input "$USERNAME")
 
-arch-chroot /mnt useradd -m -G wheel,audio,video,storage "$USERNAME"
+artix-chroot /mnt useradd -m -G wheel,audio,video,storage "$USERNAME"
 
-arch-chroot /mnt passwd "$USERNAME"
+whiptail --title "$TITLE" --msgbox "Set password for $USERNAME" 8 40
+artix-chroot /mnt passwd "$USERNAME"
 
 echo "permit persist :wheel" > /mnt/etc/doas.conf
+chmod 0400 /mnt/etc/doas.conf
 
-arch-chroot /mnt chown root:root /etc/doas.conf
-arch-chroot /mnt chmod 0400 /etc/doas.conf
+mkdir -p /mnt/etc/dinit.d/boot.d
 
-arch-chroot /mnt mkdir -p /etc/dinit.d/boot.d
+ln -sf /etc/dinit.d/NetworkManager /mnt/etc/dinit.d/boot.d/
+ln -sf /etc/dinit.d/elogind /mnt/etc/dinit.d/boot.d/
+ln -sf /etc/dinit.d/zramen /mnt/etc/dinit.d/boot.d/
 
-arch-chroot /mnt ln -sf /etc/dinit.d/dbus /etc/dinit.d/boot.d/
-arch-chroot /mnt ln -sf /etc/dinit.d/NetworkManager /etc/dinit.d/boot.d/
-arch-chroot /mnt ln -sf /etc/dinit.d/elogind /etc/dinit.d/boot.d/
-arch-chroot /mnt ln -sf /etc/dinit.d/zramen /etc/dinit.d/boot.d/
-
-arch-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Artix
-arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+artix-chroot /mnt grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=Artix
+artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 
 umount -R /mnt
 sync
 
-if whiptail --title "$TITLE" --yesno "Installation complete. Reboot?" 10 60; then
+if whiptail --title "$TITLE" --yesno "Installation complete. Reboot now?" 10 60; then
     reboot
 fi

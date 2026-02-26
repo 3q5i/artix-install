@@ -120,6 +120,7 @@ BL_CHOICE=$(whiptail --title "$TITLE" --menu "Bootloader" 15 70 3 \
     "refind" "rEFInd (graphical picker)" 3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
 
+
 # --- STAGE 2: DISK OPERATIONS ---
 umount -R /mnt 2>/dev/null || true
 mkdir -p /mnt
@@ -405,15 +406,20 @@ for DE in $DE_CHOICES; do
             artix-chroot /mnt bash -c "
                 set -e
                 cd /tmp
+                # Fetch latest tarball filename from release page
                 WM_VER=\$(curl -s https://windowmaker.org/pub/source/release/ \
-                    | grep -oP 'WindowMaker-[0-9.]+\.tar\.gz' | sort -V | tail -1)
+                    | grep -oP 'WindowMaker-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' \
+                    | sort -V | tail -1)
+                [ -z \"\$WM_VER\" ] && echo 'ERROR: Could not detect WindowMaker version' && exit 1
                 wget -q https://windowmaker.org/pub/source/release/\$WM_VER
+                # Get the actual top-level directory name from the tarball
+                WM_DIR=\$(tar -tzf \$WM_VER | head -1 | cut -d/ -f1)
                 tar -xzf \$WM_VER
-                cd \${WM_VER%.tar.gz}
+                cd \$WM_DIR
                 ./configure --prefix=/usr --sysconfdir=/etc --enable-modelock
                 make -j\$(nproc)
                 make install
-                cd /tmp && rm -rf \${WM_VER%.tar.gz} \$WM_VER
+                cd /tmp && rm -rf \$WM_DIR \$WM_VER
             "
             ;;
         Moksha)
@@ -432,7 +438,10 @@ Include = /etc/pacman.d/mirrorlist
             artix-chroot /mnt pacman -S --noconfirm \
                 cosmic-session cosmic-greeter \
                 greetd greetd-dinit \
-                xdg-desktop-portal-cosmic
+                xdg-desktop-portal-cosmic \
+                cosmic-term cosmic-files cosmic-edit \
+                cosmic-player cosmic-store cosmic-screenshot \
+                cosmic-settings pavucontrol
             # Write greetd config pointing to cosmic-greeter
             mkdir -p /mnt/etc/greetd
             cat > /mnt/etc/greetd/config.toml << 'EOF'
@@ -495,7 +504,7 @@ case "$BL_CHOICE" in
         "
         # Resolve values on the host before writing the config — no heredoc escaping issues
         # Strip /mnt/boot — EFI partition IS /boot so limine paths are relative to it
-        # e.g. /mnt/boot/vmlinuz-linux → /vmlinuz-linux
+        # vmlinuz-* glob handles the kernel image regardless of name
         KERNEL_IMG=$(ls /mnt/boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/mnt/boot||')
         INITRD_IMG=$(ls /mnt/boot/initramfs-*.img 2>/dev/null | grep -v fallback | head -1 | sed 's|/mnt/boot||')
         ROOT_UUID=$(blkid -s UUID -o value "$ROOT")

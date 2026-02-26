@@ -2,7 +2,6 @@
 set -e
 set -o pipefail
 
-# Check for root
 if [ "$EUID" -ne 0 ]; then
     echo "Please run as root."
     exit 1
@@ -29,8 +28,6 @@ validate_input() {
 }
 
 # --- STAGE 1: FRONT-LOADED INPUTS ---
-# We gather everything NOW so the script runs non-interactively later.
-
 DISK=$(lsblk -dpnoNAME,SIZE | grep -v loop | whiptail --title "$TITLE" --menu "Select Disk" 20 70 10 $(lsblk -dpnoNAME,SIZE | grep -v loop | awk '{print $1 " " $2}') 3>&1 1>&2 2>&3)
 [ -z "$DISK" ] && exit 1
 
@@ -38,7 +35,6 @@ FS_CHOICE=$(whiptail --title "$TITLE" --menu "Root Filesystem" 15 60 4 "ext4" "S
 
 SWAP_CHOICE=$(whiptail --title "$TITLE" --menu "Swap Configuration" 15 60 4 "Zram" "Use zramen" "Swapfile" "4GB Swapfile" "Both" "Zram + 4GB Swapfile" "None" "No Swap" 3>&1 1>&2 2>&3)
 
-# Localization (Read from LIVE environment to prevent the /mnt crash)
 LOCALE=$(whiptail --title "$TITLE" --menu "Select locale" 20 70 10 $(grep "UTF-8" /usr/share/i18n/SUPPORTED | awk '{print $1 " " $1}') 3>&1 1>&2 2>&3)
 TIMEZONE=$(whiptail --title "$TITLE" --menu "Select timezone" 20 70 10 $(awk '/^[^#]/ {print $3 " " $3}' /usr/share/zoneinfo/zone.tab | sort) 3>&1 1>&2 2>&3)
 
@@ -91,7 +87,6 @@ mount "$EFI" /mnt/boot
 
 # --- STAGE 3: SWAP & BASESTRAP ---
 if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
-    echo "Creating Swapfile..."
     if [[ "$FS_CHOICE" == "btrfs" ]]; then
         truncate -s 0 /mnt/swapfile
         chattr +C /mnt/swapfile
@@ -103,8 +98,15 @@ if [[ "$SWAP_CHOICE" == "Swapfile" || "$SWAP_CHOICE" == "Both" ]]; then
     mkswap /mnt/swapfile
 fi
 
-# Packages - Note: Added wpa_supplicant for better WiFi support
-BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit wpa_supplicant grub efibootmgr ntfs-3g dosfstools mtools libnewt mesa xorg-server"
+# Detect GPU for Drivers
+GPU_PKGS="mesa lib32-mesa vulkan-intel lib32-vulkan-intel xf86-video-intel"
+if lspci | grep -iI "nvidia" > /dev/null; then
+    GPU_PKGS="nvidia nvidia-utils lib32-nvidia-utils nvidia-settings"
+elif lspci | grep -iI "amd" > /dev/null; then
+    GPU_PKGS="mesa lib32-mesa xf86-video-amdgpu vulkan-radeon lib32-vulkan-radeon"
+fi
+
+BASE_PKGS="base base-devel linux linux-firmware intel-ucode amd-ucode dinit elogind-dinit dbus-dinit doas vi networkmanager networkmanager-dinit wpa_supplicant grub efibootmgr ntfs-3g dosfstools mtools libnewt xorg-server xorg-xinit"
 AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils pavucontrol"
 FS_PKGS=""
 [[ "$FS_CHOICE" == "btrfs" ]] && FS_PKGS="btrfs-progs"
@@ -113,9 +115,8 @@ FS_PKGS=""
 SWAP_PKGS=""
 [[ "$SWAP_CHOICE" == "Zram" || "$SWAP_CHOICE" == "Both" ]] && SWAP_PKGS="zramen zramen-dinit"
 
-basestrap /mnt $BASE_PKGS $AUDIO_PKGS $FS_PKGS $SWAP_PKGS
+basestrap /mnt $BASE_PKGS $AUDIO_PKGS $FS_PKGS $SWAP_PKGS $GPU_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
-
 [[ -f /mnt/swapfile ]] && echo "/swapfile none swap defaults 0 0" >> /mnt/etc/fstab
 
 # --- STAGE 4: CONFIGURATION ---
@@ -130,11 +131,11 @@ echo "root:$ROOT_PW" | artix-chroot /mnt chpasswd
 artix-chroot /mnt useradd -m -G wheel,audio,video,storage "$USERNAME"
 echo "$USERNAME:$USER_PW" | artix-chroot /mnt chpasswd
 
-# Security & Sudo Compatibility
+# Security & Sudo Link
 echo "permit persist :wheel" > /mnt/etc/doas.conf
 artix-chroot /mnt ln -sf /usr/bin/doas /usr/bin/sudo
 
-# Audio Fix: Create autostart for Pipewire
+# Audio Fix (Pipewire Autostart)
 artix-chroot /mnt bash -c "cat > /etc/profile.d/pipewire-start.sh <<EOF
 if [ -n \"\\\$DISPLAY\" ] || [ -n \"\\\$WAYLAND_DISPLAY\" ]; then
     pgrep -x pipewire > /dev/null || pipewire &
@@ -152,14 +153,14 @@ case $DE_CHOICE in
     Moksha) artix-chroot /mnt pacman -S --noconfirm moksha-artix lightdm-dinit ;;
 esac
 
-# Services (The Dinit way)
+# Services
 artix-chroot /mnt mkdir -p /etc/dinit.d/boot.d
 DM=""
 [[ "$DE_CHOICE" =~ Plasma|LXQt ]] && DM="sddm"
 [[ "$DE_CHOICE" =~ XFCE|MATE|Moksha ]] && DM="lightdm"
 
-# Note: In Artix Dinit, the NetworkManager service is usually 'networkmanager' (lowercase)
-for svc in dbus networkmanager elogind zramen $DM; do
+# Using NetworkManager (Capitalized as requested)
+for svc in dbus NetworkManager elogind zramen $DM; do
     [ -f "/mnt/etc/dinit.d/$svc" ] && artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
 done
 
@@ -170,5 +171,5 @@ artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 # --- FINISH ---
 umount -R /mnt
 sync
-whiptail --title "$TITLE" --msgbox "Installation complete! WiFi and Audio auto-config applied." 10 60
+whiptail --title "$TITLE" --msgbox "Installation complete! GPU, Network, and Audio auto-configured." 10 60
 reboot

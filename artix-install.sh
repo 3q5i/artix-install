@@ -110,21 +110,54 @@ TIMEZONE=$(pick_from_list "$TITLE" \
     "awk '/^[^#]/ {print \$3}' /usr/share/zoneinfo/zone.tab | sort")
 [ -z "$TIMEZONE" ] && exit 1
 
-KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 20 70 14 \
-    "us"      "English (US)" \
-    "uk"      "English (UK)" \
-    "de"      "German" \
-    "fr"      "French" \
-    "es"      "Spanish" \
-    "it"      "Italian" \
-    "pt"      "Portuguese" \
-    "br"      "Portuguese (Brazil)" \
-    "ru"      "Russian" \
-    "pl"      "Polish" \
-    "nl"      "Dutch" \
-    "sv"      "Swedish" \
-    "no"      "Norwegian" \
-    "dk"      "Danish" \
+KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 20 72 15 \
+    "us"         "English (US)" \
+    "uk"         "English (UK)" \
+    "us-intl"    "English (US International)" \
+    "de"         "German" \
+    "de-latin1"  "German (Latin-1)" \
+    "fr"         "French" \
+    "fr-bepo"    "French (Bepo)" \
+    "es"         "Spanish" \
+    "es-cp850"   "Spanish (CP850)" \
+    "it"         "Italian" \
+    "it2"        "Italian (IT2)" \
+    "pt"         "Portuguese" \
+    "br"         "Portuguese (Brazil)" \
+    "br-abnt2"   "Portuguese (Brazil ABNT2)" \
+    "ru"         "Russian" \
+    "ru-cp1251"  "Russian (CP1251)" \
+    "pl"         "Polish" \
+    "pl2"        "Polish (PL2)" \
+    "nl"         "Dutch" \
+    "sv"         "Swedish" \
+    "no"         "Norwegian" \
+    "dk"         "Danish" \
+    "fi"         "Finnish" \
+    "hu"         "Hungarian" \
+    "cz"         "Czech" \
+    "cz-qwerty"  "Czech (QWERTY)" \
+    "sk"         "Slovak" \
+    "sk-qwerty"  "Slovak (QWERTY)" \
+    "ro"         "Romanian" \
+    "bg"         "Bulgarian" \
+    "gr"         "Greek" \
+    "tr"         "Turkish" \
+    "tr_q"       "Turkish (Q)" \
+    "ua"         "Ukrainian" \
+    "by"         "Belarusian" \
+    "lt"         "Lithuanian" \
+    "lv"         "Latvian" \
+    "et"         "Estonian" \
+    "il"         "Hebrew" \
+    "ar"         "Arabic" \
+    "jp106"      "Japanese (106 key)" \
+    "kr"         "Korean" \
+    "cn"         "Chinese (Pinyin)" \
+    "dvorak"     "Dvorak" \
+    "dvorak-l"   "Dvorak (Left-hand)" \
+    "dvorak-r"   "Dvorak (Right-hand)" \
+    "colemak"    "Colemak" \
     3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
 
@@ -156,7 +189,7 @@ DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
     "XMonad"      "XMonad"                           OFF \
     "WindowMaker" "WindowMaker (built from source)"  OFF \
     "Moksha"      "Moksha"                           OFF \
-    "Cosmic"      "COSMIC (System76)"                OFF \
+    "Cosmic"      "COSMIC (System76) [EXPERIMENTAL]" OFF \
     "CLI"         "No GUI — CLI only"                OFF \
     3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
@@ -539,7 +572,22 @@ Include = /etc/pacman.d/mirrorlist
                 xdg-desktop-portal-cosmic \
                 cosmic-terminal cosmic-files cosmic-text-editor \
                 cosmic-player cosmic-store cosmic-screenshot \
-                cosmic-settings upower pavucontrol firefox
+                cosmic-settings upower pavucontrol firefox \
+                dbus-broker dbus-broker-dinit
+            # Switch from dbus-daemon to dbus-broker — broker handles missing
+            # D-Bus activatable services gracefully instead of letting callers
+            # like cosmic-settings and cosmic-osd spin at 100% CPU
+            artix-chroot /mnt bash -c "
+                pacman -Rdd --noconfirm dbus 2>/dev/null || true
+            "
+            # PAM elogind session registration — without this cosmic-osd never
+            # receives a session signal and spins polling in a tight loop
+            for pam_file in system-login greetd; do
+                PAM_PATH="/mnt/etc/pam.d/$pam_file"
+                if [ -f "$PAM_PATH" ] && ! grep -q "pam_elogind" "$PAM_PATH"; then
+                    echo "session required pam_elogind.so" >> "$PAM_PATH"
+                fi
+            done
             # Write greetd config pointing to cosmic-greeter
             mkdir -p /mnt/etc/greetd
             cat > /mnt/etc/greetd/config.toml << 'EOF'

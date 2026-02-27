@@ -75,12 +75,21 @@ if [[ "$SWAP_CHOICE" =~ Swapfile|Both ]]; then
     SWAP_SIZE_MB=$(( SWAP_SIZE_GB * 1024 ))
 fi
 
-LOCALE=$(whiptail --title "$TITLE" --menu "Select locale" 20 70 10 \
-    $(grep "UTF-8" /usr/share/i18n/SUPPORTED | awk '{print $1 " " $1}') 3>&1 1>&2 2>&3)
+# mapfile prevents word-splitting which causes each entry to appear twice
+mapfile -t LOCALE_LIST < <(grep "UTF-8" /usr/share/i18n/SUPPORTED | awk '{print $1; print $1}')
+LOCALE=$(whiptail --title "$TITLE" --menu "Select locale" 20 70 15 \
+    "${LOCALE_LIST[@]}" 3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
 
-TIMEZONE=$(whiptail --title "$TITLE" --menu "Select timezone" 20 70 10 \
-    $(awk '/^[^#]/ {print $3 " " $3}' /usr/share/zoneinfo/zone.tab | sort) 3>&1 1>&2 2>&3)
+mapfile -t TZ_LIST < <(awk '/^[^#]/ {print $3; print $3}' /usr/share/zoneinfo/zone.tab | sort)
+TIMEZONE=$(whiptail --title "$TITLE" --menu "Select timezone" 20 70 15 \
+    "${TZ_LIST[@]}" 3>&1 1>&2 2>&3)
+[ $? -ne 0 ] && exit 1
+
+# Keyboard layout
+mapfile -t KB_LIST < <(localectl list-keymaps 2>/dev/null | awk '{print $1; print $1}')
+KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 20 70 15 \
+    "${KB_LIST[@]}" 3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
 
 HOSTNAME=""
@@ -103,20 +112,38 @@ USER_PW=$(get_confirmed_password "User Password")
 
 # Multi-select DE/WM — whiptail checklist returns space-separated quoted selections
 DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
-    "Select Desktop Environments / WMs (space to select, enter to confirm)" 22 70 10 \
-    "Plasma"      "KDE Plasma"          OFF \
-    "XFCE"        "XFCE4"               OFF \
-    "LXQt"        "LXQt"                OFF \
-    "i3"          "i3wm"                OFF \
-    "XMonad"      "XMonad"              OFF \
-    "WindowMaker" "WindowMaker (built from source)" OFF \
-    "Moksha"      "Moksha"              OFF \
-    "Cosmic"      "COSMIC (System76)"    OFF \
+    "Select Desktop Environments / WMs (space to select, enter to confirm)" 24 70 12 \
+    "Plasma"      "KDE Plasma"                      OFF \
+    "XFCE"        "XFCE4"                            OFF \
+    "LXQt"        "LXQt"                             OFF \
+    "i3"          "i3wm"                             OFF \
+    "XMonad"      "XMonad"                           OFF \
+    "WindowMaker" "WindowMaker (built from source)"  OFF \
+    "Moksha"      "Moksha"                           OFF \
+    "Cosmic"      "COSMIC (System76)"                OFF \
+    "CLI"         "No GUI — CLI only"                OFF \
     3>&1 1>&2 2>&3)
 [ $? -ne 0 ] && exit 1
 # Strip quotes whiptail adds around each selection
 DE_CHOICES=$(echo "$DE_CHOICES" | tr -d '"')
-[ -z "$DE_CHOICES" ] && { whiptail --title "$TITLE" --msgbox "No environment selected. Exiting." 8 50; exit 1; }
+if [ -z "$DE_CHOICES" ]; then
+    whiptail --title "$TITLE" --msgbox "No environment selected. Exiting." 8 50
+    exit 1
+fi
+# CLI-only is valid — skip DE install entirely if that is the only selection
+if [ "$DE_CHOICES" = "CLI" ]; then
+    whiptail --title "$TITLE" --msgbox "CLI-only selected. No desktop will be installed." 8 60
+fi
+
+KERNEL_CHOICES=$(whiptail --title "$TITLE" --checklist \
+    "Select kernel(s) to install" 15 70 3 \
+    "linux"     "Standard — latest stable"        ON  \
+    "linux-lts" "LTS — long term support"         OFF \
+    "linux-zen" "Zen — desktop optimised"         OFF \
+    3>&1 1>&2 2>&3)
+[ $? -ne 0 ] && exit 1
+KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | tr -d '"')
+[ -z "$KERNEL_CHOICES" ] && KERNEL_CHOICES="linux"
 
 BL_CHOICE=$(whiptail --title "$TITLE" --menu "Bootloader" 15 70 3 \
     "grub"   "GRUB2 (most compatible)" \
@@ -189,13 +216,14 @@ else
     UCODE=""
 fi
 
-# GPU drivers — elif prevents AMD overwriting NVIDIA on hybrid systems
-# xf86-video-intel is deprecated; modesetting (built into xorg) handles modern Intel
+# GPU detection — check both lspci and /proc/cpuinfo for AMD APUs
+# which may not show in lspci on some systems
 if lspci | grep -qi "nvidia"; then
     GPU_PKGS="nvidia nvidia-utils"
-elif lspci | grep -qi "amd"; then
+elif lspci | grep -qiE "amd|radeon|advanced micro" || grep -qi "amd" /proc/cpuinfo; then
     GPU_PKGS="mesa xf86-video-amdgpu vulkan-mesa-layers"
 else
+    # Intel or unknown — modesetting driver built into xorg handles it
     GPU_PKGS="mesa"
 fi
 
@@ -203,7 +231,9 @@ fi
 # wpa_supplicant removed — NM handles its own supplicant since 1.20
 # vi, mtools, libnewt, efibootmgr removed — redundant or only needed on live ISO
 # intel-ucode/amd-ucode replaced by auto-detected $UCODE above
-BASE_PKGS="base linux linux-firmware $UCODE \
+# First kernel in selection goes into basestrap; extras installed after chroot
+FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
+BASE_PKGS="base $FIRST_KERNEL linux-firmware $UCODE \
     dinit elogind-dinit dbus-dinit doas \
     networkmanager networkmanager-dinit \
     ntfs-3g dosfstools \
@@ -217,6 +247,12 @@ AUDIO_PKGS="pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils"
 # --- STAGE 5: BASESTRAP ---
 basestrap /mnt $BASE_PKGS $AUDIO_PKGS $GPU_PKGS
 fstabgen -U /mnt >> /mnt/etc/fstab
+
+# Install any additional kernels selected beyond the first
+for K in $KERNEL_CHOICES; do
+    [ "$K" = "$FIRST_KERNEL" ] && continue
+    artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers"
+done
 
 # --- CARRY WIFI CONNECTION FROM LIVE ISO ---
 # Copy any active NetworkManager connections so the installed system
@@ -239,6 +275,7 @@ CONFIGURE_USERNAME=${USERNAME}
 CONFIGURE_LOCALE=${LOCALE}
 CONFIGURE_TIMEZONE=${TIMEZONE}
 CONFIGURE_HOSTNAME=${HOSTNAME}
+CONFIGURE_KB_LAYOUT=${KB_LAYOUT}
 EOF
 chmod 600 /mnt/root/install_env
 
@@ -255,6 +292,15 @@ locale-gen
 echo "LANG=${CONFIGURE_LOCALE}" > /etc/locale.conf
 ln -sf "/usr/share/zoneinfo/${CONFIGURE_TIMEZONE}" /etc/localtime
 hwclock --systohc
+
+echo "KEYMAP=${CONFIGURE_KB_LAYOUT}" > /etc/vconsole.conf
+mkdir -p /etc/X11/xorg.conf.d
+printf 'Section "InputClass"
+    Identifier "system-keyboard"
+    MatchIsKeyboard "on"
+    Option "XkbLayout" "%s"
+EndSection
+' "${CONFIGURE_KB_LAYOUT}" > /etc/X11/xorg.conf.d/00-keyboard.conf
 
 echo "${CONFIGURE_HOSTNAME}" > /etc/hostname
 
@@ -472,13 +518,15 @@ EOF
     esac
 done
 
-# Install the resolved display manager once, after all DEs are done
-if [[ "$DM" == "greetd" ]]; then
-    : # greetd already installed in the Cosmic case above
-elif [[ "$DM" == "sddm" ]]; then
-    artix-chroot /mnt pacman -S --noconfirm sddm sddm-dinit
-else
-    artix-chroot /mnt pacman -S --noconfirm lightdm lightdm-dinit lightdm-gtk-greeter
+# Install the resolved display manager — skip entirely for CLI-only
+if [ "$DE_CHOICES" != "CLI" ]; then
+    if [[ "$DM" == "greetd" ]]; then
+        : # greetd already installed in the Cosmic case above
+    elif [[ "$DM" == "sddm" ]]; then
+        artix-chroot /mnt pacman -S --noconfirm sddm sddm-dinit
+    else
+        artix-chroot /mnt pacman -S --noconfirm lightdm lightdm-dinit lightdm-gtk-greeter
+    fi
 fi
 
 # --- STAGE 10: DINIT SERVICES ---

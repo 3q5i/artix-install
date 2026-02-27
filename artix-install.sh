@@ -1,4 +1,4 @@
-\#!/bin/bash
+#!/bin/bash
 set -e
 set -o pipefail
 
@@ -110,10 +110,23 @@ TIMEZONE=$(pick_from_list "$TITLE" \
     "awk '/^[^#]/ {print \$3}' /usr/share/zoneinfo/zone.tab | sort")
 [ -z "$TIMEZONE" ] && exit 1
 
-KB_LAYOUT=$(pick_from_list "$TITLE" \
-    "Keyboard layout — type to filter (e.g. 'us', 'uk', 'de')" \
-    "localectl list-keymaps 2>/dev/null")
-[ -z "$KB_LAYOUT" ] && exit 1
+KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 20 70 14 \
+    "us"      "English (US)" \
+    "uk"      "English (UK)" \
+    "de"      "German" \
+    "fr"      "French" \
+    "es"      "Spanish" \
+    "it"      "Italian" \
+    "pt"      "Portuguese" \
+    "br"      "Portuguese (Brazil)" \
+    "ru"      "Russian" \
+    "pl"      "Polish" \
+    "nl"      "Dutch" \
+    "sv"      "Swedish" \
+    "no"      "Norwegian" \
+    "dk"      "Danish" \
+    3>&1 1>&2 2>&3)
+[ $? -ne 0 ] && exit 1
 
 HOSTNAME=""
 while [[ ! "$HOSTNAME" =~ ^[a-zA-Z0-9\-]+$ ]]; do

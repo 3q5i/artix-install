@@ -405,7 +405,7 @@ KBEOF
 echo "$HOSTNAME" > /etc/hostname
 
 echo "root:\$(cat /root/root_pw)" | chpasswd
-useradd -m -G wheel,audio,video,storage,seat,input "$USERNAME"
+useradd -m -G wheel,audio,video,storage,input "$USERNAME"
 echo "$USERNAME:\$(cat /root/user_pw)" | chpasswd
 rm /root/root_pw /root/user_pw
 
@@ -621,6 +621,8 @@ for DE in $DE_CHOICES; do
                 cosmic-player cosmic-store cosmic-screenshot \
                 cosmic-settings upower pavucontrol firefox \
                 seatd seatd-dinit
+            # Add user to seat group — created by seatd package
+            artix-chroot /mnt usermod -aG seat "$USERNAME"
             # Create cosmic-greeter system user if missing
             artix-chroot /mnt id cosmic-greeter >/dev/null 2>&1 || \
                 artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter

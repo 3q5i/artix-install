@@ -200,6 +200,26 @@ if [ "$INSTALL_TYPE" = "DE" ]; then
         whiptail --title "$TITLE" --msgbox "Nothing selected, defaulting to CLI." 8 50
         DE_CHOICES="CLI"
     fi
+
+    # Ask extras immediately after DE selection while context is fresh
+    PLASMA_EXTRAS=0
+    XFCE_EXTRAS=0
+    I3_EXTRAS=0
+    if echo "$DE_CHOICES" | grep -qw "Plasma"; then
+        whiptail --title "$TITLE" --yesno \
+            "Install KDE apps?\n\ndolphin  — file manager\nkonsole  — terminal\nkate     — text editor\nark      — archive manager\nokular   — document viewer\ngwenview — image viewer\nkcalc    — calculator\nfirefox  — web browser\nfastfetch — system info" \
+            20 55 && PLASMA_EXTRAS=1 || true
+    fi
+    if echo "$DE_CHOICES" | grep -qw "XFCE"; then
+        whiptail --title "$TITLE" --yesno \
+            "Install XFCE extras?\n\nxfce4-goodies — panel plugins, thunar plugins,\nscreenshot tool, archive manager, media player\nfirefox        — web browser\nfastfetch      — system info" \
+            14 58 && XFCE_EXTRAS=1 || true
+    fi
+    if echo "$DE_CHOICES" | grep -qw "i3"; then
+        whiptail --title "$TITLE" --yesno \
+            "Install i3 extras?\n\ndmenu     — application launcher\nxterm     — basic terminal\nfirefox   — web browser\nfastfetch — system info" \
+            13 50 && I3_EXTRAS=1 || true
+    fi
 fi
 
 # =========================
@@ -413,13 +433,8 @@ Exec=/usr/local/bin/start-pipewire
 X-KDE-autostart-phase=1
 EOF
 
-# Plasma autostart-scripts — covers Plasma Wayland
-mkdir -p /mnt/home/"$USERNAME"/.config/autostart-scripts
-cat > /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh << 'EOF'
-#!/bin/bash
-exec /usr/local/bin/start-pipewire
-EOF
-chmod +x /mnt/home/"$USERNAME"/.config/autostart-scripts/pipewire.sh
+# Note: autostart-scripts/ intentionally omitted — KDE auto-converts scripts
+# in that directory into broken .desktop files pointing to wrong paths
 
 # .xprofile — bare WMs via lightdm
 cat > /mnt/home/"$USERNAME"/.xprofile << 'EOF'
@@ -488,16 +503,16 @@ for DE in $DE_CHOICES; do
         Plasma)
             artix-chroot /mnt pacman -S --noconfirm \
                 plasma xdg-desktop-portal-kde plasma-pa
-            if whiptail --title "$TITLE" --yesno "Install KDE apps?\n\ndolphin — file manager\nkonsole — terminal\nkate    — text editor\nark     — archive manager\nokular  — document viewer\ngwenview— image viewer\nkcalc   — calculator" 18 50; then
+            if [ "${PLASMA_EXTRAS:-0}" = "1" ]; then
                 artix-chroot /mnt pacman -S --noconfirm \
-                    dolphin konsole kate ark okular gwenview kcalc
+                    dolphin konsole kate ark okular gwenview kcalc firefox fastfetch
             fi
             ;;
         XFCE)
             artix-chroot /mnt pacman -S --noconfirm \
                 xfce4 xdg-desktop-portal-gtk pavucontrol
-            if whiptail --title "$TITLE" --yesno "Install XFCE extras?\n\nxfce4-goodies — extra panel plugins, thunar plugins,\nscreenshot tool, archive manager, media player, etc." 13 55; then
-                artix-chroot /mnt pacman -S --noconfirm xfce4-goodies
+            if [ "${XFCE_EXTRAS:-0}" = "1" ]; then
+                artix-chroot /mnt pacman -S --noconfirm xfce4-goodies firefox fastfetch
             fi
             ;;
         LXQt)
@@ -505,8 +520,8 @@ for DE in $DE_CHOICES; do
             ;;
         i3)
             artix-chroot /mnt pacman -S --noconfirm i3-wm pavucontrol
-            if whiptail --title "$TITLE" --yesno "Install i3 extras?\n\ndmenu  — application launcher\nxterm  — basic terminal" 12 50; then
-                artix-chroot /mnt pacman -S --noconfirm dmenu xterm
+            if [ "${I3_EXTRAS:-0}" = "1" ]; then
+                artix-chroot /mnt pacman -S --noconfirm dmenu xterm firefox fastfetch
             fi
             ;;
         XMonad)

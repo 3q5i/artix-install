@@ -626,11 +626,8 @@ for DE in $DE_CHOICES; do
             # Turnstile — dinit equivalent of systemd --user session management
             # Required for COSMIC to get a proper dbus user session
             artix-chroot /mnt pacman -S --noconfirm turnstile turnstile-dinit pambase-turnstile
-            # Enable rundir management so /run/user/UID gets created
-            mkdir -p /mnt/etc/turnstile
-            cat > /mnt/etc/turnstile/turnstiled.conf << 'TEOF'
-manage_rundir = yes
-TEOF
+            # Leave manage_rundir at default (no) — elogind already manages /run/user/UID
+            # Setting manage_rundir=yes would conflict with elogind
             # PAM turnstile session — must come before elogind in pam stack
             for pam_file in system-login greetd; do
                 PAM_PATH="/mnt/etc/pam.d/$pam_file"

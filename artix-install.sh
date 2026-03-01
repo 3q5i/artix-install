@@ -626,17 +626,17 @@ for DE in $DE_CHOICES; do
                 artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter
             # Turnstile — dinit equivalent of systemd --user session management
             # Required for COSMIC to get a proper dbus user session
-            artix-chroot /mnt pacman -S --noconfirm turnstile turnstile-dinit pambase-turnstile
+            artix-chroot /mnt pacman -S --noconfirm turnstile turnstile-dinit
             # Leave manage_rundir at default (no) — elogind already manages /run/user/UID
             # Setting manage_rundir=yes would conflict with elogind
-            # PAM turnstile session — must come before elogind in pam stack
+            # PAM turnstile + elogind session registration
             for pam_file in system-login greetd; do
                 PAM_PATH="/mnt/etc/pam.d/$pam_file"
                 [ -f "$PAM_PATH" ] || continue
                 grep -q "pam_turnstile" "$PAM_PATH" || \
                     sed -i '1s/^/session  required  pam_turnstile.so\n/' "$PAM_PATH"
                 grep -q "pam_elogind" "$PAM_PATH" || \
-                    echo "session required pam_elogind.so" >> "$PAM_PATH"
+                    echo "session  required  pam_elogind.so" >> "$PAM_PATH"
             done
             mkdir -p /mnt/etc/greetd
             cat > /mnt/etc/greetd/config.toml << 'EOF'

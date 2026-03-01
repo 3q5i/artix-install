@@ -315,14 +315,21 @@ fi
 # CACHYOS REPO (if needed)
 # =========================
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    pacman-key --recv-keys F3B607488DB35A47 --keyserver keyserver.ubuntu.com 2>/dev/null || true
-    pacman-key --lsign-key F3B607488DB35A47 2>/dev/null || true
-    pacman -U --noconfirm --needed \
-        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst' \
-        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst' 2>/dev/null || true
+    # Download and install keyring + mirrorlist directly
+    curl -sO 'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst'
+    curl -sO 'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
+    pacman-key --init
+    pacman -U --noconfirm cachyos-keyring-*.pkg.tar.zst cachyos-mirrorlist-*.pkg.tar.zst
+    rm -f cachyos-keyring-*.pkg.tar.zst cachyos-mirrorlist-*.pkg.tar.zst
     grep -q '\[cachyos\]' /etc/pacman.conf || \
         printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /etc/pacman.conf
-    pacman -Sy 2>/dev/null || true
+    pacman -Sy
+    # Verify the binary kernel is actually available from the repo
+    if ! pacman -Si linux-cachyos &>/dev/null; then
+        whiptail --title "$TITLE" --msgbox "WARNING: CachyOS repo not available.\nFalling back to linux kernel." 10 50
+        KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | sed 's/linux-cachyos/linux/g')
+        FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
+    fi
 fi
 
 # =========================
@@ -346,11 +353,12 @@ sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 10/' /mnt/etc/pacman.conf
 
 # Persist CachyOS repo into installed system for future updates
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    artix-chroot /mnt pacman-key --recv-keys F3B607488DB35A47 --keyserver keyserver.ubuntu.com 2>/dev/null || true
-    artix-chroot /mnt pacman-key --lsign-key F3B607488DB35A47 2>/dev/null || true
-    artix-chroot /mnt pacman -U --noconfirm --needed \
-        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst' \
-        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst' 2>/dev/null || true
+    artix-chroot /mnt bash -c "
+        curl -sO 'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst'
+        curl -sO 'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
+        pacman -U --noconfirm cachyos-keyring-*.pkg.tar.zst cachyos-mirrorlist-*.pkg.tar.zst
+        rm -f cachyos-keyring-*.pkg.tar.zst cachyos-mirrorlist-*.pkg.tar.zst
+    "
     grep -q '\[cachyos\]' /mnt/etc/pacman.conf || \
         printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /mnt/etc/pacman.conf
     artix-chroot /mnt pacman -Sy --noconfirm

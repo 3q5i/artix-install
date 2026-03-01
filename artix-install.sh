@@ -619,10 +619,7 @@ for DE in $DE_CHOICES; do
                 xdg-desktop-portal-cosmic xdg-user-dirs-gtk \
                 cosmic-terminal cosmic-files cosmic-text-editor \
                 cosmic-player cosmic-store cosmic-screenshot \
-                cosmic-settings upower pavucontrol firefox \
-                seatd seatd-dinit
-            # Add user to seat group — created by seatd package
-            artix-chroot /mnt usermod -aG seat "$USERNAME"
+                cosmic-settings upower pavucontrol firefox
             # Create cosmic-greeter system user if missing
             artix-chroot /mnt id cosmic-greeter >/dev/null 2>&1 || \
                 artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter
@@ -699,7 +696,7 @@ if [ -f /mnt/etc/dinit.d/rtkit-daemon ]; then
 elif [ -f /mnt/etc/dinit.d/rtkit ]; then
     SVCS="$SVCS rtkit"
 fi
-echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS upower turnstiled seatd"
+echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS upower turnstiled"
 [ -n "$DM" ] && SVCS="$SVCS $DM"
 
 for svc in $SVCS; do

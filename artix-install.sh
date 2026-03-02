@@ -226,10 +226,10 @@ fi
 # KERNEL
 # =========================
 KERNEL_CHOICES=$(whiptail --title "$TITLE" --checklist \
-    "Select kernel(s)" 30 80 10 \
-    "linux"         "Standard"                                        OFF  \
+    "Select kernel(s)" 20 70 5 \
+    "linux"         "Standard"                                        ON  \
     "linux-lts"     "LTS — long term support"                         OFF \
-    "linux-zen"     "Zen — desktop optimised"                         ON \
+    "linux-zen"     "Zen — desktop optimised"                         OFF \
     "linux-lqx"     "Liquorix — low latency + MuQSS scheduler"        OFF \
     "linux-cachyos" "CachyOS — BORE scheduler + perf (adds CachyOS repo)" OFF \
     3>&1 1>&2 2>&3) || exit 1
@@ -628,24 +628,12 @@ for DE in $DE_CHOICES; do
             "
             ;;
         WindowMaker)
-            artix-chroot /mnt pacman -S --noconfirm \
-                base-devel wget \
-                libx11 libxext libxmu libxpm libxt libxft fontconfig libpng pavucontrol
-            artix-chroot /mnt bash -c "
-                set -e
-                cd /tmp
-                WM_VER=\$(curl -s https://windowmaker.org/pub/source/release/ \
-                    | grep -oP 'WindowMaker-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | sort -V | tail -1)
-                [ -z \"\$WM_VER\" ] && echo 'ERROR: could not find WindowMaker tarball' && exit 1
-                wget -q https://windowmaker.org/pub/source/release/\$WM_VER
-                WM_DIR=\$(tar -tzf \$WM_VER | head -1 | cut -d/ -f1)
-                tar -xzf \$WM_VER
-                cd \$WM_DIR
-                ./configure --prefix=/usr --sysconfdir=/etc --enable-modelock
-                make -j\$(nproc)
-                make install
-                cd /tmp && rm -rf \$WM_DIR \$WM_VER
-            "
+            # windowmaker is in Arch's extra repo — enable it temporarily
+            artix-chroot /mnt pacman -S --noconfirm artix-archlinux-support
+            grep -q '\[extra\]' /mnt/etc/pacman.conf || \
+                printf '\n[extra]\nInclude = /etc/pacman.d/mirrorlist-arch\n' >> /mnt/etc/pacman.conf
+            artix-chroot /mnt pacman -Sy --noconfirm
+            artix-chroot /mnt pacman -S --noconfirm windowmaker pavucontrol
             ;;
         Moksha)
             artix-chroot /mnt pacman -S --noconfirm moksha-artix pavucontrol

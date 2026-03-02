@@ -424,24 +424,20 @@ done
 # =========================
 # CHROOT CONFIG
 # =========================
-# Write passwords to files — avoids all encoding issues
+# Write passwords to tightly-permissioned files
 printf '%s' "$ROOTPW" > /mnt/root/root_pw
 printf '%s' "$USERPW"  > /mnt/root/user_pw
 chmod 600 /mnt/root/root_pw /mnt/root/user_pw
 
-cat > /mnt/root/setup.sh << EOF
-#!/bin/bash
-set -e
+# Locale and timezone
+artix-chroot /mnt bash -c "echo '$LOCALE UTF-8' >> /etc/locale.gen && locale-gen"
+artix-chroot /mnt bash -c "echo 'LANG=$LOCALE' > /etc/locale.conf"
+artix-chroot /mnt bash -c "ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime && hwclock --systohc"
 
-echo "$LOCALE UTF-8" >> /etc/locale.gen
-locale-gen
-echo "LANG=$LOCALE" > /etc/locale.conf
-ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
-hwclock --systohc
-
-echo "KEYMAP=$KB_LAYOUT" > /etc/vconsole.conf
-mkdir -p /etc/X11/xorg.conf.d
-cat > /etc/X11/xorg.conf.d/00-keyboard.conf << KBEOF
+# Keyboard
+artix-chroot /mnt bash -c "echo 'KEYMAP=$KB_LAYOUT' > /etc/vconsole.conf"
+mkdir -p /mnt/etc/X11/xorg.conf.d
+cat > /mnt/etc/X11/xorg.conf.d/00-keyboard.conf << KBEOF
 Section "InputClass"
     Identifier "system-keyboard"
     MatchIsKeyboard "on"
@@ -449,21 +445,20 @@ Section "InputClass"
 EndSection
 KBEOF
 
-echo "$HOSTNAME" > /etc/hostname
+# Hostname
+echo "$HOSTNAME" > /mnt/etc/hostname
 
-echo "root:\$(cat /root/root_pw)" | chpasswd
-useradd -m -G wheel,audio,video,storage,input "$USERNAME"
-echo "$USERNAME:\$(cat /root/user_pw)" | chpasswd
-rm /root/root_pw /root/user_pw
+# Passwords — read directly from files inside chroot, no encoding needed
+artix-chroot /mnt bash -c "echo 'root:'\"$(cat /mnt/root/root_pw)\" | chpasswd"
+artix-chroot /mnt bash -c "useradd -m -G wheel,audio,video,storage,input '$USERNAME'"
+artix-chroot /mnt bash -c "echo '$USERNAME:'\"$(cat /mnt/root/user_pw)\" | chpasswd"
+rm /mnt/root/root_pw /mnt/root/user_pw
 
-echo "permit persist :wheel" > /etc/doas.conf
+# doas
+echo "permit persist :wheel" > /mnt/etc/doas.conf
 
-su -s /bin/bash - "$USERNAME" -c "xdg-user-dirs-update"
-EOF
-
-chmod +x /mnt/root/setup.sh
-artix-chroot /mnt /root/setup.sh
-rm /mnt/root/setup.sh
+# XDG user dirs
+artix-chroot /mnt su -s /bin/bash - "$USERNAME" -c "xdg-user-dirs-update"
 
 # =========================
 # PIPEWIRE AUTOSTART

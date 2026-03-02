@@ -226,10 +226,11 @@ fi
 # KERNEL
 # =========================
 KERNEL_CHOICES=$(whiptail --title "$TITLE" --checklist \
-    "Select kernel(s)" 18 70 4 \
+    "Select kernel(s)" 20 70 5 \
     "linux"         "Standard"                                        ON  \
     "linux-lts"     "LTS — long term support"                         OFF \
     "linux-zen"     "Zen — desktop optimised"                         OFF \
+    "linux-lqx"     "Liquorix — low latency + MuQSS scheduler"        OFF \
     "linux-cachyos" "CachyOS — BORE scheduler + perf (adds CachyOS repo)" OFF \
     3>&1 1>&2 2>&3) || exit 1
 KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | tr -d '"')
@@ -324,6 +325,17 @@ if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic"; then
 fi
 
 # =========================
+# LIQUORIX REPO (if needed)
+# =========================
+if echo "$KERNEL_CHOICES" | grep -qw "linux-lqx"; then
+    pacman-key --keyserver hkps://keyserver.ubuntu.com --recv-keys 9AE4078033F8024D
+    pacman-key --lsign-key 9AE4078033F8024D
+    grep -q 'liquorix.net' /etc/pacman.conf || \
+        printf '\n[liquorix]\nServer = https://liquorix.net/archlinux/$repo/$arch\n' >> /etc/pacman.conf
+    pacman -Sy
+fi
+
+# =========================
 # CACHYOS REPO (if needed)
 # =========================
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
@@ -362,6 +374,15 @@ fstabgen -U /mnt >> /mnt/etc/fstab
 sed -i 's/^#Color/Color\nILoveCandy/' /mnt/etc/pacman.conf
 sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 10/' /mnt/etc/pacman.conf
 
+# Persist Liquorix repo into installed system
+if echo "$KERNEL_CHOICES" | grep -qw "linux-lqx"; then
+    artix-chroot /mnt pacman-key --keyserver hkps://keyserver.ubuntu.com --recv-keys 9AE4078033F8024D
+    artix-chroot /mnt pacman-key --lsign-key 9AE4078033F8024D
+    grep -q 'liquorix.net' /mnt/etc/pacman.conf || \
+        printf '\n[liquorix]\nServer = https://liquorix.net/archlinux/$repo/$arch\n' >> /mnt/etc/pacman.conf
+    artix-chroot /mnt pacman -Sy --noconfirm
+fi
+
 # Persist CachyOS repo into installed system for future updates
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     artix-chroot /mnt bash -c "
@@ -375,7 +396,12 @@ if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     artix-chroot /mnt pacman -Sy --noconfirm
 fi
 
-# Copy wifi connections from live ISO
+# Install headers for lqx/cachyos if selected as first kernel
+if [ "$FIRST_KERNEL" = "linux-lqx" ]; then
+    artix-chroot /mnt pacman -S --noconfirm linux-lqx-headers
+elif [ "$FIRST_KERNEL" = "linux-cachyos" ]; then
+    : # cachyos bundles headers
+fi
 if [ -d /etc/NetworkManager/system-connections ]; then
     mkdir -p /mnt/etc/NetworkManager/system-connections
     cp /etc/NetworkManager/system-connections/* \
@@ -388,6 +414,8 @@ for K in $KERNEL_CHOICES; do
     [ "$K" = "$FIRST_KERNEL" ] && continue
     if [ "$K" = "linux-cachyos" ]; then
         artix-chroot /mnt pacman -S --noconfirm linux-cachyos
+    elif [ "$K" = "linux-lqx" ]; then
+        artix-chroot /mnt pacman -S --noconfirm linux-lqx linux-lqx-headers
     else
         artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers"
     fi
@@ -429,7 +457,6 @@ echo "$USERNAME:\$(cat /root/user_pw)" | chpasswd
 rm /root/root_pw /root/user_pw
 
 echo "permit persist :wheel" > /etc/doas.conf
-ln -sf /usr/bin/doas /usr/bin/sudo
 
 su -s /bin/bash - "$USERNAME" -c "xdg-user-dirs-update"
 EOF
@@ -682,6 +709,10 @@ if [ -n "$DM" ]; then
         artix-chroot /mnt pacman -S --noconfirm lightdm lightdm-dinit lightdm-gtk-greeter
     fi
 fi
+
+# sudo symlink — after all packages installed to avoid conflicts
+# kdesu and various DE tools hardcode sudo
+artix-chroot /mnt ln -sf /usr/bin/doas /usr/bin/sudo 2>/dev/null || true
 
 # =========================
 # DINIT SERVICES

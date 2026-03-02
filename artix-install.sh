@@ -185,15 +185,18 @@ INSTALL_TYPE=$(whiptail --title "$TITLE" --menu "Installation Type" 12 60 2 \
 DE_CHOICES="CLI"
 if [ "$INSTALL_TYPE" = "DE" ]; then
     DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
-        "Select DE/WM (space to toggle, enter to confirm)" 24 70 10 \
-        "Plasma"      "KDE Plasma"                      OFF \
-        "XFCE"        "XFCE4"                            OFF \
-        "LXQt"        "LXQt"                             OFF \
-        "i3"          "i3wm"                             OFF \
-        "XMonad"      "XMonad"                           OFF \
-        "WindowMaker" "WindowMaker (from source)"        OFF \
-        "Moksha"      "Moksha"                           OFF \
-        "Cosmic"      "COSMIC [EXPERIMENTAL]"            OFF \
+        "Select DE/WM (space to toggle, enter to confirm)" 28 70 12 \
+        "Plasma"   "KDE Plasma"               OFF \
+        "XFCE"     "XFCE4"                    OFF \
+        "LXQt"     "LXQt"                     OFF \
+        "i3"       "i3wm"                     OFF \
+        "XMonad"   "XMonad"                   OFF \
+        "Openbox"  "Openbox"                  OFF \
+        "Fluxbox"  "Fluxbox"                  OFF \
+        "IceWM"    "IceWM"                    OFF \
+        "Hyprland" "Hyprland (Wayland)"       OFF \
+        "Moksha"   "Moksha"                   OFF \
+        "Cosmic"   "COSMIC [EXPERIMENTAL]"    OFF \
         3>&1 1>&2 2>&3) || exit 1
     DE_CHOICES=$(echo "$DE_CHOICES" | tr -d '"')
     if [ -z "$DE_CHOICES" ]; then
@@ -219,6 +222,30 @@ if [ "$INSTALL_TYPE" = "DE" ]; then
         whiptail --title "$TITLE" --yesno \
             "Install i3 extras?\n\ndmenu     — application launcher\nxterm     — basic terminal\nfirefox   — web browser\nfastfetch — system info" \
             13 50 && I3_EXTRAS=1 || true
+    fi
+    OPENBOX_EXTRAS=0
+    FLUXBOX_EXTRAS=0
+    ICEWM_EXTRAS=0
+    HYPRLAND_EXTRAS=0
+    if echo "$DE_CHOICES" | grep -qw "Openbox"; then
+        whiptail --title "$TITLE" --yesno \
+            "Install Openbox extras?\n\nobconf    — graphical config tool\ntint2     — taskbar/panel\npicom     — compositor\nrofi      — app launcher\nfirefox   — web browser\nfastfetch — system info" \
+            15 52 && OPENBOX_EXTRAS=1 || true
+    fi
+    if echo "$DE_CHOICES" | grep -qw "Fluxbox"; then
+        whiptail --title "$TITLE" --yesno \
+            "Install Fluxbox extras?\n\nfeh       — wallpaper setter\npicom     — compositor\nrofi      — app launcher\nfirefox   — web browser\nfastfetch — system info" \
+            14 52 && FLUXBOX_EXTRAS=1 || true
+    fi
+    if echo "$DE_CHOICES" | grep -qw "IceWM"; then
+        whiptail --title "$TITLE" --yesno \
+            "Install IceWM extras?\n\niceconf   — graphical config tool\nfeh       — wallpaper setter\nrofi      — app launcher\nfirefox   — web browser\nfastfetch — system info" \
+            14 52 && ICEWM_EXTRAS=1 || true
+    fi
+    if echo "$DE_CHOICES" | grep -qw "Hyprland"; then
+        whiptail --title "$TITLE" --yesno \
+            "Install Hyprland extras?\n\nwaybar    — status bar\nwofi      — app launcher\nswaylock  — screen locker\ngrim+slurp — screenshots\nfirefox   — web browser\nfastfetch — system info" \
+            16 56 && HYPRLAND_EXTRAS=1 || true
     fi
 fi
 
@@ -560,6 +587,8 @@ fi
 # =========================
 if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
     DM="greetd"
+elif echo "$DE_CHOICES" | grep -qw "Hyprland"; then
+    DM="greetd"
 elif echo "$DE_CHOICES" | grep -qw "Plasma"; then
     DM="sddm"
 elif [ "$DE_CHOICES" != "CLI" ]; then
@@ -625,26 +654,38 @@ for DE in $DE_CHOICES; do
                 chown -R $USERNAME:$USERNAME /home/$USERNAME/.config/
             "
             ;;
-            WindowMaker)
-    artix-chroot /mnt pacman -S --noconfirm \
-        windowmaker \
-        wmakerconf \
-        menu \
-        pavucontrol
-
-    mkdir -p /mnt/usr/share/xsessions
-    cat > /mnt/usr/share/xsessions/windowmaker.desktop << 'EOF'
+        Openbox)
+            artix-chroot /mnt pacman -S --noconfirm openbox xterm pavucontrol
+            if [ "${OPENBOX_EXTRAS:-0}" = "1" ]; then
+                artix-chroot /mnt pacman -S --noconfirm obconf tint2 picom rofi firefox fastfetch
+            fi
+            ;;
+        Fluxbox)
+            artix-chroot /mnt pacman -S --noconfirm fluxbox xterm pavucontrol
+            if [ "${FLUXBOX_EXTRAS:-0}" = "1" ]; then
+                artix-chroot /mnt pacman -S --noconfirm feh picom rofi firefox fastfetch
+            fi
+            ;;
+        IceWM)
+            artix-chroot /mnt pacman -S --noconfirm icewm xterm pavucontrol
+            if [ "${ICEWM_EXTRAS:-0}" = "1" ]; then
+                artix-chroot /mnt pacman -S --noconfirm iceconf feh rofi firefox fastfetch
+            fi
+            ;;
+        Hyprland)
+            artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland pavucontrol
+            if [ "${HYPRLAND_EXTRAS:-0}" = "1" ]; then
+                artix-chroot /mnt pacman -S --noconfirm waybar wofi swaylock grim slurp firefox fastfetch
+            fi
+            mkdir -p /mnt/usr/share/wayland-sessions
+            cat > /mnt/usr/share/wayland-sessions/hyprland.desktop << 'EOF'
 [Desktop Entry]
-Name=Window Maker
-Comment=Window Maker
-Exec=wmaker
-TryExec=wmaker
+Name=Hyprland
+Comment=A dynamic tiling Wayland compositor
+Exec=Hyprland
 Type=Application
 EOF
-
-    artix-chroot /mnt bash -c "echo 'exec wmaker' > /home/$USERNAME/.xinitrc"
-    artix-chroot /mnt chown $USERNAME:$USERNAME /home/$USERNAME/.xinitrc
-;;
+            ;;
         Moksha)
             artix-chroot /mnt pacman -S --noconfirm moksha-artix pavucontrol
             ;;
@@ -695,7 +736,20 @@ done
 
 if [ -n "$DM" ]; then
     if [[ "$DM" == "greetd" ]]; then
-        : # installed in Cosmic case
+        if ! echo "$DE_CHOICES" | grep -qw "Cosmic"; then
+            # greetd for Hyprland
+            artix-chroot /mnt pacman -S --noconfirm greetd greetd-dinit
+            mkdir -p /mnt/etc/greetd
+            cat > /mnt/etc/greetd/config.toml << 'EOF'
+[terminal]
+vt = 1
+
+[default_session]
+command = "Hyprland"
+user = "$USERNAME"
+EOF
+        fi
+        : # COSMIC installs its own greetd in the Cosmic case block
     elif [[ "$DM" == "sddm" ]]; then
         artix-chroot /mnt pacman -S --noconfirm sddm sddm-dinit
     else

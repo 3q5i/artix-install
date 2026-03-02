@@ -3,9 +3,17 @@
 A simple TUI installer for Artix Linux with dinit(Currently supports dinit. Other init systems may be added in the future.) that gives you a minimal,
 (mostly) bloat-free system without sacrificing convenience.
 
-I've always had to choose between manually installing Artix to avoid the
-bloat that comes with Calamares, or giving in to that convenience. This
-script solves that dilemma.
+## Why would I choose this over the official installer?
+- Well calamares is bloated installed it on a shitbox might be a pain loading a graphical session.
+
+- It installs only the necessary packages aka less bloat
+
+- It configures wifi and audio for you which is a plus for me
+
+- Adds the choice that you secretly crave custom kernels bootloader and additional wms/des it provides you with all of the customization that you could ever want
+
+- doas is simply better
+
 
 ## What it configures
 - Disk partitioning and filesystem (ext4, btrfs, xfs, f2fs)
@@ -17,8 +25,8 @@ script solves that dilemma.
 - Audio via PipeWire (note: KDE Plasma audio can be finicky)
 - doas instead of sudo
 - WiFi (carries your live session connection into the install)
-- Optional DE/WM: KDE Plasma, XFCE, LXQt, i3, XMonad, Moksha,
-  WindowMaker(compiled from source), COSMIC(experimental), or CLI-only
+- Optional DE/WM(note that I ship with the base verison of these but iam considering shipping riced versions of these): KDE Plasma, XFCE, LXQt, i3, XMonad, Moksha,
+  Icewm, Fluxbox, Hyprland, COSMIC(experimental), or CLI-only
 
 ## Usage
 Boot the Artix live ISO, connect to wifi via nmtui, then run the following command as root

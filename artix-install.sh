@@ -390,9 +390,9 @@ basestrap /mnt \
     base "$FIRST_KERNEL" linux-firmware $UCODE \
     dinit elogind-dinit dbus-dinit \
     networkmanager networkmanager-dinit \
-    doas rtkit \
+    doas rtkit polkit \
     $XORG_PKGS xdg-user-dirs \
-    pipewire pipewire-pulse pipewire-alsa wireplumber \
+    pipewire pipewire-pulse pipewire-alsa pipewire-jack wireplumber \
     $GPU
 
 fstabgen -U /mnt >> /mnt/etc/fstab

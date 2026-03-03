@@ -2,6 +2,17 @@
 set -e
 set -o pipefail
 
+# Restore terminal and show log if install fails
+trap 'exec 1>&4 2>&5 2>/dev/null; exec 4>&- 5>&- 2>/dev/null
+      exec 3>&- 2>/dev/null
+      kill "$GAUGE_PID" 2>/dev/null || true
+      rm -f "${GAUGE_PIPE:-}" 2>/dev/null
+      echo ""
+      echo "INSTALL FAILED — see $INSTALL_LOG for details"
+      echo ""
+      tail -20 "${INSTALL_LOG:-/dev/null}" 2>/dev/null
+      exit 1' ERR
+
 # =========================
 # SAFE RECOVERY
 # =========================
@@ -509,6 +520,11 @@ whiptail --title "$TITLE" --gauge "Starting installation..." 8 70 0 < "$GAUGE_PI
 GAUGE_PID=$!
 exec 3>"$GAUGE_PIPE"
 
+# Redirect all install output to log — keeps gauge visible
+INSTALL_LOG="/tmp/artix-install.log"
+exec 4>&1 5>&2        # save original stdout/stderr
+exec 1>"$INSTALL_LOG" 2>&1
+
 gauge() {
     local pct="$1" msg="$2"
     echo "$pct" >&3
@@ -889,11 +905,22 @@ modprobe -r zram
 EOF
     chmod +x /mnt/usr/local/bin/zram-teardown
 
-    cat > /mnt/etc/dinit.d/zram << 'EOF'
+    if [ "$INIT" = "dinit" ]; then
+        cat > /mnt/etc/dinit.d/zram << 'EOF'
 type = scripted
 command = /usr/local/bin/zram-setup
 stop-command = /usr/local/bin/zram-teardown
 EOF
+    else
+        # OpenRC service
+        cat > /mnt/etc/init.d/zram << 'EOF'
+#!/sbin/openrc-run
+description="zram swap"
+command="/usr/local/bin/zram-setup"
+stop() { /usr/local/bin/zram-teardown; }
+EOF
+        chmod +x /mnt/etc/init.d/zram
+    fi
 fi
 
 gauge 65 "Installing desktop environment..."
@@ -1299,5 +1326,7 @@ sleep 1
 exec 3>&-
 kill "$GAUGE_PID" 2>/dev/null || true
 rm -f "$GAUGE_PIPE"
+exec 1>&4 2>&5   # restore stdout/stderr
+exec 4>&- 5>&-
 
 whiptail --title "$TITLE" --yesno "Install complete! Reboot now?" 10 50 && reboot || true

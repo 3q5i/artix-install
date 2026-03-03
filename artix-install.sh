@@ -951,27 +951,56 @@ cat > /mnt/etc/cpupower.conf << 'EOF'
 governor='schedutil'
 EOF
 
-SVCS="dbus NetworkManager elogind cpupower"
-if [ -f /mnt/etc/dinit.d/rtkit-daemon ]; then
-    SVCS="$SVCS rtkit-daemon"
-elif [ -f /mnt/etc/dinit.d/rtkit ]; then
-    SVCS="$SVCS rtkit"
-fi
-echo "$DE_CHOICES" | grep -qw "Cosmic" && SVCS="$SVCS upower turnstiled"
-[ -n "$DM" ] && SVCS="$SVCS $DM"
+# Networking choice — NM is convenient but heavy (~30MB)
+NET_CHOICE=$(whiptail --title "$TITLE" --menu \
+    "Network Stack\\n\\nNetworkManager is heavy (~30MB).\\nLighter options save significant RAM." \
+    15 65 3 \
+    "dhcpcd" "dhcpcd  -- ethernet only, ~2MB" \
+    "iwd"    "iwd     -- wifi + ethernet, ~5MB" \
+    "NM"     "NetworkManager -- full featured, ~30MB" \
+    3>&1 1>&2 2>&3) || NET_CHOICE="NM"
 
-for svc in $SVCS; do
-    if [ -f "/mnt/etc/dinit.d/$svc" ]; then
-        artix-chroot /mnt ln -sf /etc/dinit.d/$svc /etc/dinit.d/boot.d/
+case "$NET_CHOICE" in
+    dhcpcd)
+        artix-chroot /mnt pacman -S --noconfirm dhcpcd dhcpcd-dinit
+        NET_SVC="dhcpcd"
+        ;;
+    iwd)
+        artix-chroot /mnt pacman -S --noconfirm iwd iwd-dinit
+        NET_SVC="iwd"
+        ;;
+    NM)
+        NET_SVC="NetworkManager"
+        ;;
+esac
+
+SVCS="dbus \$NET_SVC elogind cpupower"
+if [ -f /mnt/etc/dinit.d/rtkit-daemon ]; then
+    SVCS="\$SVCS rtkit-daemon"
+elif [ -f /mnt/etc/dinit.d/rtkit ]; then
+    SVCS="\$SVCS rtkit"
+fi
+echo "\$DE_CHOICES" | grep -qw "Cosmic" && SVCS="\$SVCS upower turnstiled"
+[ -n "\$DM" ] && SVCS="\$SVCS \$DM"
+
+for svc in \$SVCS; do
+    if [ -f "/mnt/etc/dinit.d/\$svc" ]; then
+        artix-chroot /mnt ln -sf /etc/dinit.d/\$svc /etc/dinit.d/boot.d/
     else
-        echo "Warning: dinit service '$svc' not found, skipping."
+        echo "Warning: dinit service \$svc not found, skipping."
     fi
 done
 
-if [[ "$SWAP" =~ Zram|Both ]]; then
+if [[ "\$SWAP" =~ Zram|Both ]]; then
     [ -f "/mnt/etc/dinit.d/zram" ] && \
         artix-chroot /mnt ln -sf /etc/dinit.d/zram /etc/dinit.d/boot.d/
 fi
+
+# Only enable tty1 — tty2-6 waste ~15MB sitting idle
+for tty in 2 3 4 5 6; do
+    rm -f /mnt/etc/dinit.d/boot.d/getty@tty\${tty} 2>/dev/null || true
+    artix-chroot /mnt dinitctl disable getty@tty\${tty} 2>/dev/null || true
+done
 
 # =========================
 # BOOTLOADER

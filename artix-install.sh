@@ -73,6 +73,14 @@ DISK=$(whiptail --title "$TITLE" --menu "Select Disk" 20 70 10 \
     "${disklist[@]}" 3>&1 1>&2 2>&3) || exit 1
 
 # =========================
+# PARTITION MODE
+# =========================
+PART_MODE=$(whiptail --title "$TITLE" --menu "Partitioning Mode" 12 65 2 \
+    "auto"   "Automatic -- wipe disk and partition for me" \
+    "manual" "Manual    -- I will partition with cfdisk" \
+    3>&1 1>&2 2>&3) || exit 1
+
+# =========================
 # FILESYSTEM
 # =========================
 FS=$(whiptail --title "$TITLE" --menu "Root Filesystem" 15 60 4 \
@@ -314,8 +322,9 @@ NET_CHOICE=$(whiptail --title "$TITLE" --menu \
 # =========================
 # PARTITION
 # =========================
-wipefs -af "$DISK"
-fdisk "$DISK" << EOF
+if [ "$PART_MODE" = "auto" ]; then
+    wipefs -af "$DISK"
+    fdisk "$DISK" << FDEOF
 g
 n
 1
@@ -329,21 +338,41 @@ n
 
 
 w
-EOF
-
-udevadm settle
-[[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
-EFI="${DISK}${P}1"
-ROOT="${DISK}${P}2"
-
-mkfs.fat -F32 "$EFI"
+FDEOF
+    udevadm settle
+    [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
+    EFI="${DISK}${P}1"
+    ROOT="${DISK}${P}2"
+    mkfs.fat -F32 "$EFI"
+else
+    # Manual — launch cfdisk then let user pick partitions
+    clear
+    echo "Opening cfdisk for $DISK"
+    echo "Create at minimum: one EFI System partition and one root partition."
+    read -rp "Press Enter to open cfdisk..."
+    cfdisk "$DISK"
+    udevadm settle
+    mapfile -t partlist < <(lsblk -pno NAME,SIZE "$DISK" | grep -v "^$DISK " | awk '{print $1; print $2}')
+    EFI=$(whiptail --title "$TITLE" --menu \
+        "Select EFI partition (will be formatted FAT32)" \
+        15 65 8 "${partlist[@]}" 3>&1 1>&2 2>&3) || exit 1
+    ROOT=$(whiptail --title "$TITLE" --menu \
+        "Select Root partition (will be formatted $FS)" \
+        15 65 8 "${partlist[@]}" 3>&1 1>&2 2>&3) || exit 1
+    # Ask before formatting EFI — important for dual-boot
+    CURRENT_EFI_FS=$(lsblk -no FSTYPE "$EFI" 2>/dev/null)
+    if [ "$CURRENT_EFI_FS" = "vfat" ]; then
+        whiptail --title "$TITLE" --yesno \
+            "$EFI already contains a FAT32 filesystem.\n\nFormat it? Choose No to keep existing contents (recommended for dual-boot)." \
+            10 65 && mkfs.fat -F32 "$EFI" || true
+    else
+        mkfs.fat -F32 "$EFI"
+    fi
+fi
 
 if [ "$ENCRYPT" = "1" ]; then
-    # Install cryptsetup on live ISO if not present
     command -v cryptsetup &>/dev/null || pacman -Sy --noconfirm cryptsetup
-    # Format partition with LUKS2
     echo -n "$LUKS_PW" | cryptsetup luksFormat --type luks2 "$ROOT" -
-    # Open the LUKS container
     echo -n "$LUKS_PW" | cryptsetup open "$ROOT" cryptroot -
     REAL_ROOT="$ROOT"
     ROOT="/dev/mapper/cryptroot"
@@ -359,7 +388,6 @@ esac
 mount "$ROOT" /mnt
 mkdir -p /mnt/boot
 mount "$EFI" /mnt/boot
-
 # =========================
 # SWAPFILE
 # =========================

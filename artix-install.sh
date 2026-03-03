@@ -4,10 +4,8 @@ set -o pipefail
 
 # Restore terminal and show log if install fails
 trap 'exec 1>&4 2>&5 2>/dev/null; exec 4>&- 5>&- 2>/dev/null
-      exec 3>&- 2>/dev/null
-      kill "$WATCH_PID" 2>/dev/null || true
       kill "$GAUGE_PID" 2>/dev/null || true
-      rm -f "${GAUGE_PIPE:-}" 2>/dev/null
+      rm -f "${GAUGE_CMD_FILE:-}" "${GAUGE_CMD_FILE:-}.pipe" 2>/dev/null
       echo ""
       echo "INSTALL FAILED — see $INSTALL_LOG for details"
       echo ""
@@ -515,40 +513,54 @@ mount "$EFI" /mnt/boot
 # =========================
 # PROGRESS GAUGE
 # =========================
-GAUGE_PIPE=$(mktemp -u /tmp/gauge_XXXXXX)
-mkfifo "$GAUGE_PIPE"
-whiptail --title "$TITLE" --gauge "Starting installation..." 8 70 0 < "$GAUGE_PIPE" &
+INSTALL_LOG="/tmp/artix-install.log"
+GAUGE_CMD_FILE=$(mktemp /tmp/gauge_cmd_XXXXXX)
+echo "0|Starting installation..." > "$GAUGE_CMD_FILE"
+
+# Single writer process — owns the pipe exclusively, reads cmd file + log
+(
+    GAUGE_PIPE=$(mktemp -u /tmp/gauge_inner_XXXXXX)
+    mkfifo "$GAUGE_PIPE"
+    echo "$GAUGE_PIPE" > "${GAUGE_CMD_FILE}.pipe"
+    whiptail --title "$TITLE" --gauge "Starting installation..." 8 70 0 \
+        < "$GAUGE_PIPE" &
+    exec > "$GAUGE_PIPE"   # this process owns the pipe
+
+    pct=0; msg="Starting installation..."
+    while true; do
+        # Read latest command
+        if [ -f "$GAUGE_CMD_FILE" ]; then
+            IFS='|' read -r new_pct new_msg < "$GAUGE_CMD_FILE"
+            pct="$new_pct"; msg="$new_msg"
+        fi
+        # Read last meaningful log line
+        detail=""
+        if [ -f "$INSTALL_LOG" ]; then
+            detail=$(grep -av '^$' "$INSTALL_LOG" 2>/dev/null | tail -1 | \
+                     sed 's/\x1b\[[0-9;]*m//g; s/[^[:print:]]//g' | cut -c1-66)
+        fi
+        echo "$pct"
+        echo "XXX"
+        [ -n "$detail" ] && printf '%s\n%s' "$msg" "$detail" || echo "$msg"
+        echo "XXX"
+        sleep 1
+    done
+) &
 GAUGE_PID=$!
-exec 3>"$GAUGE_PIPE"
+
+# Wait for inner pipe path to be written
+for _ in 1 2 3 4 5; do
+    [ -f "${GAUGE_CMD_FILE}.pipe" ] && break
+    sleep 0.2
+done
 
 # Redirect all install output to log — keeps gauge visible
-INSTALL_LOG="/tmp/artix-install.log"
-exec 4>&1 5>&2        # save original stdout/stderr
+exec 4>&1 5>&2
 exec 1>"$INSTALL_LOG" 2>&1
 
-# Background watcher — tails log and updates gauge detail line
-CURRENT_PCT=0
-gauge_watch() {
-    tail -f "$INSTALL_LOG" 2>/dev/null | while IFS= read -r line; do
-        # Strip control chars, truncate to fit whiptail width
-        clean=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-65)
-        [ -z "$clean" ] && continue
-        echo "$CURRENT_PCT" >&3
-        echo "XXX" >&3
-        echo "$clean" >&3
-        echo "XXX" >&3
-    done
-}
-gauge_watch &
-WATCH_PID=$!
-
 gauge() {
-    CURRENT_PCT="$1"
-    local msg="$2"
-    echo "$CURRENT_PCT" >&3
-    echo "XXX" >&3
-    echo "$msg" >&3
-    echo "XXX" >&3
+    local pct="$1" msg="$2"
+    echo "${pct}|${msg}" > "$GAUGE_CMD_FILE"
 }
 
 gauge 2 "Partitioning disk..."
@@ -1340,12 +1352,10 @@ esac
 # =========================
 umount -R /mnt
 gauge 100 "Installation complete!"
-sleep 1
-exec 3>&-
-kill "$WATCH_PID" 2>/dev/null || true
+sleep 2
 kill "$GAUGE_PID" 2>/dev/null || true
-rm -f "$GAUGE_PIPE"
-exec 1>&4 2>&5   # restore stdout/stderr
+rm -f "$GAUGE_CMD_FILE" "${GAUGE_CMD_FILE}.pipe"
+exec 1>&4 2>&5
 exec 4>&- 5>&-
 
 whiptail --title "$TITLE" --yesno "Install complete! Reboot now?" 10 50 && reboot || true

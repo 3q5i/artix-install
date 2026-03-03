@@ -116,6 +116,8 @@ fi
 # ENCRYPTION
 # =========================
 ENCRYPT=0
+REAL_ROOT=""
+LUKS_CMDLINE=""
 if whiptail --title "$TITLE" --yesno "Enable full disk encryption (LUKS2)?
 
 You will be prompted for a passphrase.
@@ -879,10 +881,14 @@ case "$BOOT" in
                 --label 'Limine' \
                 --loader '\\EFI\\limine\\BOOTX64.EFI'
         "
-        ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
         # Modern Limine v6+ TOML config format
-        LIMINE_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
-        [ "$ENCRYPT" = "1" ] && LIMINE_CMDLINE="$LUKS_CMDLINE root=/dev/mapper/cryptroot rw quiet"
+        if [ "$ENCRYPT" = "1" ]; then
+            PART_UUID=$(blkid -s UUID -o value "$REAL_ROOT")
+            LIMINE_CMDLINE="rd.luks.name=$PART_UUID=cryptroot root=/dev/mapper/cryptroot rw quiet"
+        else
+            ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
+            LIMINE_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
+        fi
         cat > /mnt/boot/limine.conf << EOF
 timeout = 5
 

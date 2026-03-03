@@ -373,8 +373,11 @@ fi
 
 # Only install xorg if a DE/WM that needs it was selected
 XORG_PKGS=""
-if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic"; then
-    XORG_PKGS="xorg-server xorg-xinit"
+if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
+    # xorg-server pulls in everything — use minimal components instead
+    # xorg-server only — modesetting driver is built into the kernel,
+    # no xf86-video-* needed. xf86-input-libinput handles all input devices.
+    XORG_PKGS="xorg-server xorg-xinit xf86-input-libinput"
 fi
 
 # Only install audio stack for DEs that actually use it
@@ -452,6 +455,11 @@ fi
 # Pacman optimizations
 sed -i 's/^#Color/Color\nILoveCandy/' /mnt/etc/pacman.conf
 sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 10/' /mnt/etc/pacman.conf
+# Block legacy xf86-video DDX drivers — modesetting handles everything
+# Prevents DE metapackages from pulling them in as optional deps
+grep -q 'xf86-video-amdgpu' /mnt/etc/pacman.conf || \
+    sed -i '/^\[options\]/a IgnorePkg = xf86-video-amdgpu xf86-video-intel xf86-video-nouveau xf86-video-fbdev xf86-video-vesa' \
+    /mnt/etc/pacman.conf
 
 # Persist Liquorix repo into installed system
 if echo "$KERNEL_CHOICES" | grep -qw "linux-lqx"; then
@@ -741,7 +749,8 @@ for DE in $DE_CHOICES; do
             fi
             ;;
         IceWM)
-            artix-chroot /mnt pacman -S --noconfirm icewm xterm
+            artix-chroot /mnt pacman -S --noconfirm icewm xterm ttf-dejavu
+            artix-chroot /mnt fc-cache -fv &>/dev/null
             if [ "${ICEWM_EXTRAS:-0}" = "1" ]; then
                 artix-chroot /mnt pacman -S --noconfirm iceconf feh rofi firefox fastfetch
             fi

@@ -371,13 +371,34 @@ else
     GPU="mesa"
 fi
 
+# Bare WMs don't use GL at all — modesetting DDX only needs libdrm which
+# is already a kernel dependency. Skip mesa entirely to avoid pulling in LLVM.
+BARE_WM_ONLY=1
+FULL_DES="Plasma XFCE LXQt Moksha Cosmic Hyprland i3 XMonad"
+for _de in $FULL_DES; do
+    if echo "$DE_CHOICES" | grep -qw "$_de"; then
+        BARE_WM_ONLY=0
+        break
+    fi
+done
+[ "$DE_CHOICES" = "CLI" ] && BARE_WM_ONLY=0  # CLI needs no GPU at all
+if [ "$BARE_WM_ONLY" = "1" ]; then
+    GPU=""
+fi
+
 # Only install xorg if a DE/WM that needs it was selected
 XORG_PKGS=""
+USE_XLIBRE=0
 if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
-    # xorg-server pulls in everything — use minimal components instead
-    # xorg-server only — modesetting driver is built into the kernel,
-    # no xf86-video-* needed. xf86-input-libinput handles all input devices.
-    XORG_PKGS="xorg-server xorg-xinit xf86-input-libinput"
+    if whiptail --title "$TITLE" --yesno \
+        "Use XLibre instead of Xorg?\n\nXLibre is Artix's actively maintained Xorg fork.\nFeatures: TearFree by default, cleaner codebase.\nInstalled from galaxy-gremlins repo.\n\nRecommended for bare WMs. Choose No for Xorg." \
+        14 60; then
+        USE_XLIBRE=1
+        # xlibre-xserver conflicts with xorg-server — replaces it automatically
+        XORG_PKGS="xlibre-xserver xlibre-xserver-common xorg-xinit"
+    else
+        XORG_PKGS="xorg-server xorg-xinit xf86-input-libinput"
+    fi
 fi
 
 # Only install audio stack for DEs that actually use it
@@ -389,6 +410,15 @@ for _de in $AUDIO_DES; do
         break
     fi
 done
+
+# =========================
+# XLIBRE REPO (if needed)
+# =========================
+if [ "$USE_XLIBRE" = "1" ]; then
+    grep -q '\[galaxy-gremlins\]' /etc/pacman.conf || \
+        printf '\n[galaxy-gremlins]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
+    pacman -Sy --noconfirm
+fi
 
 # =========================
 # LIQUORIX REPO (if needed)
@@ -435,6 +465,15 @@ basestrap /mnt \
     $GPU
 
 fstabgen -U /mnt >> /mnt/etc/fstab
+
+# Persist XLibre repo and finish input driver install
+if [ "$USE_XLIBRE" = "1" ]; then
+    grep -q '\[galaxy-gremlins\]' /mnt/etc/pacman.conf || \
+        printf '\n[galaxy-gremlins]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
+    # xlibre-input-libinput conflicts with xf86-input-libinput — install after server
+    artix-chroot /mnt pacman -Sy --noconfirm
+    artix-chroot /mnt pacman -S --noconfirm xlibre-input-libinput
+fi
 
 # Encryption setup inside installed system
 if [ "$ENCRYPT" = "1" ]; then
@@ -754,6 +793,16 @@ for DE in $DE_CHOICES; do
             if [ "${ICEWM_EXTRAS:-0}" = "1" ]; then
                 artix-chroot /mnt pacman -S --noconfirm iceconf feh rofi firefox fastfetch
             fi
+            mkdir -p /mnt/home/"$USERNAME"/.config/icewm
+            cat > /mnt/home/"$USERNAME"/.xinitrc << 'EOF'
+#!/bin/sh
+# Load fonts into X session
+xset fp+ /usr/share/fonts/TTF
+xset fp+ /usr/share/fonts/dejavu
+xset fp rehash
+exec icewm-session
+EOF
+            chmod +x /mnt/home/"$USERNAME"/.xinitrc
             ;;
         Hyprland)
             artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland pavucontrol

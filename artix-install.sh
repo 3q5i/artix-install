@@ -6,15 +6,11 @@ set -o pipefail
 [ -d /sys/firmware/efi ] && UEFI=1 || UEFI=0
 
 # Restore terminal and show log if install fails
- trap 'exec 1>&4 2>&5 2>/dev/null; exec 4>&- 5>&- 2>/dev/null
-      kill "${GAUGE_PID:-}" 2>/dev/null || true
-      rm -f "${GAUGE_CMD_FILE:-}" 2>/dev/null
-      umount -R /mnt 2>/dev/null || true
-      echo ""
-      echo "INSTALL FAILED — see ${INSTALL_LOG:-/tmp/artix-install.log} for details"
-      echo ""
-      tail -20 "${INSTALL_LOG:-/dev/null}" 2>/dev/null
-      exit 1' ERR
+ trap 'echo ""
+       echo "INSTALL FAILED at line $LINENO"
+       echo ""
+       umount -R /mnt 2>/dev/null || true
+       exit 1' ERR
 
 # =========================
 # SAFE RECOVERY
@@ -540,48 +536,15 @@ mkdir -p /mnt/boot
 [ -n "${SWAP_PART:-}" ] && swapon "$SWAP_PART"
 
 # =========================
-# PROGRESS GAUGE
+# PROGRESS
 # =========================
-INSTALL_LOG="/tmp/artix-install.log"
-GAUGE_CMD_FILE=$(mktemp /tmp/gauge_cmd_XXXXXX)
-echo "0|Starting installation..." > "$GAUGE_CMD_FILE"
-> "$INSTALL_LOG"  # create empty log now so tail never fails
-
-# Ticker — sole writer to whiptail, runs every second
-# Piped directly into whiptail so no race on pipe open
-(
-    set +e  # never let errors in ticker kill the subshell
-    while true; do
-        sleep 1
-        [ -f "$GAUGE_CMD_FILE" ] || continue
-        IFS='|' read -r pct msg < "$GAUGE_CMD_FILE" 2>/dev/null || continue
-        detail=$(tail -1 "$INSTALL_LOG" 2>/dev/null                  | sed 's/\[[0-9;]*m//g; s/[^[:print:]	]//g'                  | tr -s ' ' | cut -c1-64)
-        if [ -n "$detail" ]; then
-            printf 'XXX
-%s
-%s
-%s
-XXX
-' "$pct" "$msg" "$detail"
-        else
-            printf 'XXX
-%s
-%s
-XXX
-' "$pct" "$msg"
-        fi
-    done
-) | whiptail --title "$TITLE" --gauge "Starting installation..." 8 70 0 &
-GAUGE_PID=$!
-TICKER_PID=$(pgrep -P $GAUGE_PID 2>/dev/null || echo "")
-
-# Redirect install output to log — gauge stays visible
-exec 4>&1 5>&2
-exec 1>"$INSTALL_LOG" 2>&1
-
+# Print section headers during install
 gauge() {
-    echo "${1}|${2}" > "$GAUGE_CMD_FILE"
+    echo ""
+    echo "==> ${2}"
+    echo ""
 }
+
 
 gauge 2 "Partitioning disk..."
 
@@ -1415,15 +1378,8 @@ esac
 # DONE
 # =========================
 gauge 100 "Installation complete!"
-sleep 2
-kill "$GAUGE_PID" 2>/dev/null || true
-wait "$GAUGE_PID" 2>/dev/null || true
-rm -f "$GAUGE_CMD_FILE"
-exec 1>&4 2>&5
-exec 4>&- 5>&-
 
 umount -R /mnt 2>/dev/null || true
 
-whiptail --title "$TITLE" --yesno \
-    "Installation complete!\n\nInstall log saved to $INSTALL_LOG\n\nReboot now?" \
-    12 55 && reboot || true
+whiptail --title "$TITLE" --yesno "Installation complete!\n\nReboot now?" 10 50 \
+    && reboot || true

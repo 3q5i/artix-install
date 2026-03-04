@@ -2,6 +2,9 @@
 set -e
 set -o pipefail
 
+# Detect firmware type
+[ -d /sys/firmware/efi ] && UEFI=1 || UEFI=0
+
 # Restore terminal and show log if install fails
  trap 'exec 1>&4 2>&5 2>/dev/null; exec 4>&- 5>&- 2>/dev/null
       touch "${GAUGE_STOP_FILE:-/tmp/.gauge_dead}" 2>/dev/null
@@ -296,11 +299,15 @@ FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
 # =========================
 # BOOTLOADER
 # =========================
-BOOT=$(whiptail --title "$TITLE" --menu "Bootloader" 12 60 3 \
-    "grub"   "GRUB2 (most compatible, required for dual-boot)" \
-    "limine" "Limine (fast, minimal)" \
-    "refind" "rEFInd (graphical)" \
-    3>&1 1>&2 2>&3) || exit 1
+if [ "$UEFI" = "1" ]; then
+    BOOT=$(whiptail --title "$TITLE" --menu "Bootloader" 12 60 3 \
+        "grub"   "GRUB2 (most compatible, required for dual-boot)" \
+        "limine" "Limine (fast, minimal)" \
+        "refind" "rEFInd (graphical)" \
+        3>&1 1>&2 2>&3) || exit 1
+else
+    BOOT="grub"  # BIOS systems only support GRUB
+fi
 
 # =========================
 # XLIBRE / XORG
@@ -353,8 +360,8 @@ tui_partition_manager() {
         ACTION=$(whiptail --title "$TITLE" --menu \
             "Partition Manager — $DISK (${DISK_SIZE_GB}GB)\n\nLayout: $TABLE" \
             19 72 6 \
-            "auto"     "Auto layout       — 1GB EFI + rest as root (wipes disk)" \
-            "dualboot" "Dual-boot         — use existing partitions, pick root + EFI" \
+            "auto"     "Auto layout       — $([ \"$UEFI\" = \"1\" ] && echo '1GB EFI + rest as root' || echo 'full disk as root') (wipes disk)" \
+            $([ "$UEFI" = "1" ] && echo '"dualboot" "Dual-boot -- use existing partitions, pick root + EFI"') \
             "add"      "Add partition      — define a new partition" \
             "delete"   "Delete last        — remove last added partition" \
             "clear"    "Clear all          — start layout over" \
@@ -368,9 +375,15 @@ tui_partition_manager() {
                 PART_TYPES=()
                 DUALBOOT=0
                 [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
-                PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
-                PART_SIZES=( "1" "0" )
-                PART_TYPES=( "EFI" "root" )
+                if [ "$UEFI" = "1" ]; then
+                    PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
+                    PART_SIZES=( "1" "0" )
+                    PART_TYPES=( "EFI" "root" )
+                else
+                    PART_DEVS=( "${DISK}${P}1" )
+                    PART_SIZES=( "0" )
+                    PART_TYPES=( "root" )
+                fi
                 ;;
             dualboot)
                 DUALBOOT=1
@@ -401,11 +414,15 @@ tui_partition_manager() {
                     "Partition size in GB\n(0 = fill remaining space on disk)" \
                     10 55 "" 3>&1 1>&2 2>&3) || continue
                 PTYPE=$(whiptail --title "$TITLE" --menu "Partition type" 12 45 4 \
-                    "EFI"  "EFI System Partition (boot)" \
+                    "EFI"  "EFI System Partition (UEFI only)" \
                     "root" "Root filesystem" \
                     "swap" "Swap partition" \
                     "data" "Extra data partition" \
                     3>&1 1>&2 2>&3) || continue
+                if [ "$PTYPE" = "EFI" ] && [ "$UEFI" = "0" ]; then
+                    whiptail --title "$TITLE" --msgbox "EFI partitions are not used on BIOS systems." 8 52
+                    continue
+                fi
                 PIDX=$(( ${#PART_DEVS[@]} + 1 ))
                 [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
                 PART_DEVS+=( "${DISK}${P}${PIDX}" )
@@ -432,10 +449,14 @@ tui_partition_manager() {
                     [ "$t" = "EFI" ]  && EFI_COUNT=$(( EFI_COUNT + 1 ))
                     [ "$t" = "root" ] && ROOT_COUNT=$(( ROOT_COUNT + 1 ))
                 done
-                if [ "$EFI_COUNT" -ne 1 ] || [ "$ROOT_COUNT" -ne 1 ]; then
+                if [ "$UEFI" = "1" ] && [ "$EFI_COUNT" -ne 1 ]; then
                     whiptail --title "$TITLE" --msgbox \
-                        "Invalid layout.\n\nYou need exactly one EFI partition and one root partition.\nCurrent: ${EFI_COUNT}x EFI, ${ROOT_COUNT}x root." \
-                        10 55
+                        "UEFI requires exactly one EFI partition.\nCurrent: ${EFI_COUNT}x EFI." 8 55
+                    continue
+                fi
+                if [ "$ROOT_COUNT" -ne 1 ]; then
+                    whiptail --title "$TITLE" --msgbox \
+                        "You need exactly one root partition.\nCurrent: ${ROOT_COUNT}x root." 8 55
                     continue
                 fi
                 for i in "${!PART_TYPES[@]}"; do
@@ -454,23 +475,34 @@ if [ "$DUALBOOT" = "0" ]; then
     # Fresh install — wipe and write new partition table via sfdisk
     wipefs -af "$DISK"
     {
-        echo "label: gpt"
+        [ "$UEFI" = "1" ] && echo "label: gpt" || echo "label: dos"
         echo "label-id: $(cat /proc/sys/kernel/random/uuid)"
         for i in "${!PART_DEVS[@]}"; do
             SZ="${PART_SIZES[$i]}"
             TYPE="${PART_TYPES[$i]}"
-            case "$TYPE" in
-                EFI)  TYPECODE="C12A7328-F81F-11D2-BA4B-00A0C93EC93B" ;;
-                swap) TYPECODE="0657FD6D-A4AB-43C4-84E5-0933C84B4F4F" ;;
-                *)    TYPECODE="0FC63DAF-8483-4772-8E79-3D69D8477DE4" ;;
-            esac
-            [ "$SZ" = "0" ] \
-                && echo "size=+, type=$TYPECODE" \
-                || echo "size=+${SZ}G, type=$TYPECODE"
+            if [ "$UEFI" = "1" ]; then
+                case "$TYPE" in
+                    EFI)  TYPECODE="C12A7328-F81F-11D2-BA4B-00A0C93EC93B" ;;
+                    swap) TYPECODE="0657FD6D-A4AB-43C4-84E5-0933C84B4F4F" ;;
+                    *)    TYPECODE="0FC63DAF-8483-4772-8E79-3D69D8477DE4" ;;
+                esac
+                [ "$SZ" = "0" ] \
+                    && echo "size=+, type=$TYPECODE" \
+                    || echo "size=+${SZ}G, type=$TYPECODE"
+            else
+                case "$TYPE" in
+                    swap) TYPECODE="82" ;;
+                    *)    TYPECODE="83" ;;
+                esac
+                BOOTFLAG=""; [ "$TYPE" = "root" ] && BOOTFLAG=", bootable"
+                [ "$SZ" = "0" ] \
+                    && echo "size=+, type=$TYPECODE$BOOTFLAG" \
+                    || echo "size=+${SZ}G, type=$TYPECODE$BOOTFLAG"
+            fi
         done
     } | sfdisk "$DISK"
     udevadm settle
-    mkfs.fat -F32 "$EFI"
+    [ "$UEFI" = "1" ] && mkfs.fat -F32 "$EFI"
     # Format swap partition now — activate after mount so fstabgen sees it
     SWAP_PART=""
     for i in "${!PART_TYPES[@]}"; do
@@ -504,7 +536,7 @@ esac
 
 mount "$ROOT" /mnt
 mkdir -p /mnt/boot
-mount "$EFI" /mnt/boot
+[ "$UEFI" = "1" ] && mount "$EFI" /mnt/boot
 
 # Activate swap partition now so fstabgen picks it up
 [ -n "${SWAP_PART:-}" ] && swapon "$SWAP_PART"
@@ -1277,7 +1309,8 @@ gauge 90 "Installing bootloader..."
 # =========================
 case "$BOOT" in
     grub)
-        artix-chroot /mnt pacman -S --noconfirm grub efibootmgr
+        artix-chroot /mnt pacman -S --noconfirm grub
+        [ "$UEFI" = "1" ] && artix-chroot /mnt pacman -S --noconfirm efibootmgr
         if [ "$DUALBOOT" = "1" ]; then
             # os-prober detects other OSes (Windows etc) for GRUB menu
             artix-chroot /mnt pacman -S --noconfirm os-prober
@@ -1289,11 +1322,15 @@ case "$BOOT" in
             mount --bind /proc /mnt/proc
             mount --bind /sys  /mnt/sys
         fi
-        artix-chroot /mnt grub-install \
-            --target=x86_64-efi \
-            --efi-directory=/boot \
-            --bootloader-id=Artix \
-            --recheck
+        if [ "$UEFI" = "1" ]; then
+            artix-chroot /mnt grub-install \
+                --target=x86_64-efi \
+                --efi-directory=/boot \
+                --bootloader-id=Artix \
+                --recheck
+        else
+            artix-chroot /mnt grub-install --target=i386-pc --recheck "$DISK"
+        fi
         if [ "$ENCRYPT" = "1" ]; then
             GRUB_LUKS="cryptdevice=UUID=$(blkid -s UUID -o value "$REAL_ROOT"):cryptroot root=/dev/mapper/cryptroot"
             sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$GRUB_LUKS\"|" /mnt/etc/default/grub

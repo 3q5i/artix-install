@@ -351,15 +351,21 @@ tui_partition_manager() {
         done
         [ -z "$TABLE" ] && TABLE="(no partitions defined yet)"
 
+        [ "$UEFI" = "1" ] && _AUTO_DESC="Auto layout — 1GB EFI + rest as root (wipes disk)" \
+                          || _AUTO_DESC="Auto layout — full disk as root (wipes disk)"
+        MENU_ARGS=(
+            "auto"     "$_AUTO_DESC"
+            "add"      "Add partition"
+            "delete"   "Delete last partition"
+            "clear"    "Clear all partitions"
+            "done"     "Write and continue"
+        )
+        [ "$UEFI" = "1" ] && MENU_ARGS+=( "dualboot" "Dual-boot — use existing partitions, pick root + EFI" )
+
         ACTION=$(whiptail --title "$TITLE" --menu \
             "Partition Manager — $DISK (${DISK_SIZE_GB}GB)\n\nLayout: $TABLE" \
             19 72 6 \
-            "auto"     "Auto layout       — $([ \"$UEFI\" = \"1\" ] && echo '1GB EFI + rest as root' || echo 'full disk as root') (wipes disk)" \
-            $([ "$UEFI" = "1" ] && echo '"dualboot" "Dual-boot -- use existing partitions, pick root + EFI"') \
-            "add"      "Add partition      — define a new partition" \
-            "delete"   "Delete last        — remove last added partition" \
-            "clear"    "Clear all          — start layout over" \
-            "done"     "Write and continue — apply layout to disk" \
+            "${MENU_ARGS[@]}" \
             3>&1 1>&2 2>&3) || exit 1
 
         case "$ACTION" in

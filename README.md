@@ -1,6 +1,6 @@
 # artix-install
 
-A simple TUI installer for Artix Linux with dinit(Currently supports dinit. Other init systems may be added in the future.) that gives you a minimal,
+A simple TUI installer for Artix Linux with dinit or openrc that gives you a minimal,
 (mostly) bloat-free system without sacrificing convenience.
 
 ## Why would I choose this over the official installer?

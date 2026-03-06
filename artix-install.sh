@@ -374,7 +374,7 @@ while true; do
             PART_SIZES=()
             PART_TYPES=()
             DUALBOOT=0
-            [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
+            [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
             if [ "$UEFI" = "1" ]; then
                 PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
                 PART_SIZES=( "1" "0" )
@@ -424,7 +424,7 @@ while true; do
                 continue
             fi
             PIDX=$(( ${#PART_DEVS[@]} + 1 ))
-            [[ "$DISK" =~ [0-9]$ ]] && P="p" || P=""
+            [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
             PART_DEVS+=( "${DISK}${P}${PIDX}" )
             PART_SIZES+=( "$PSIZE" )
             PART_TYPES+=( "$PTYPE" )
@@ -578,18 +578,24 @@ else
     UCODE=""
 fi
 
+# Always start with mesa — needed for iGPU, Wayland, PRIME offload
+GPU="mesa"
 if lspci | grep -qi nvidia; then
-    GPU="nvidia nvidia-utils"
-elif lspci | grep -qiE "amd|radeon"; then
-    GPU="mesa vulkan-radeon"
-else
-    GPU="mesa"
+    GPU="$GPU nvidia nvidia-utils"
+fi
+if lspci | grep -qiE "amd|radeon"; then
+    GPU="$GPU vulkan-radeon"
+fi
+if lspci | grep -qi "intel.*graphics\|vga.*intel"; then
+    GPU="$GPU vulkan-intel"
 fi
 
 # Bare WMs don't use GL at all — modesetting DDX only needs libdrm which
 # is already a kernel dependency. Skip mesa entirely to avoid pulling in LLVM.
 BARE_WM_ONLY=1
-FULL_DES="Plasma XFCE LXQt Moksha Cosmic Hyprland i3 XMonad"
+# IceWM is the only WM that can run without any GPU acceleration
+# Everything else (i3/XMonad/Openbox/Fluxbox/Hyprland) uses compositors or GL
+FULL_DES="Plasma XFCE LXQt Moksha Cosmic Hyprland i3 XMonad Openbox Fluxbox"
 for _de in $FULL_DES; do
     if echo "$DE_CHOICES" | grep -qw "$_de"; then
         BARE_WM_ONLY=0
@@ -700,7 +706,7 @@ if [ "$ENCRYPT" = "1" ]; then
     artix-chroot /mnt mkinitcpio -P
 
     # Store LUKS UUID for bootloader cmdline
-    LUKS_CMDLINE="cryptdevice=UUID=$LUKS_UUID=cryptroot root=/dev/mapper/cryptroot"
+    LUKS_CMDLINE="cryptdevice=UUID=$LUKS_UUID:cryptroot root=/dev/mapper/cryptroot"
 fi
 
 # Pacman optimizations

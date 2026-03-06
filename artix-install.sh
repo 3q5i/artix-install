@@ -646,16 +646,22 @@ fi
 # CACHYOS REPO (if needed)
 # =========================
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    # Download and install keyring + mirrorlist directly
-    curl -sO 'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst'
-    curl -sO 'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
+    # Download CachyOS keyring and mirrorlist to a known temp dir
+    CACHY_TMP=$(mktemp -d /tmp/cachyos-XXXXXX)
+    CACHY_BASE="https://mirror.cachyos.org/repo/x86_64/cachyos"
+    curl -fL --retry 3 -o "$CACHY_TMP/cachyos-keyring.pkg.tar.zst" \
+        "${CACHY_BASE}/cachyos-keyring-20240331-1-any.pkg.tar.zst"
+    curl -fL --retry 3 -o "$CACHY_TMP/cachyos-mirrorlist.pkg.tar.zst" \
+        "${CACHY_BASE}/cachyos-mirrorlist-22-1-any.pkg.tar.zst"
     pacman-key --init
-    pacman -U --noconfirm cachyos-keyring-*.pkg.tar.zst cachyos-mirrorlist-*.pkg.tar.zst
-    rm -f cachyos-keyring-*.pkg.tar.zst cachyos-mirrorlist-*.pkg.tar.zst
+    pacman -U --noconfirm \
+        "$CACHY_TMP/cachyos-keyring.pkg.tar.zst" \
+        "$CACHY_TMP/cachyos-mirrorlist.pkg.tar.zst"
+    rm -rf "$CACHY_TMP"
     grep -q '\[cachyos\]' /etc/pacman.conf || \
         printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /etc/pacman.conf
     pacman -Sy
-    # Verify the binary kernel is actually available from the repo
+    # Verify the kernel is actually available
     if ! pacman -Si linux-cachyos &>/dev/null; then
         whiptail --title "$TITLE" --msgbox "WARNING: CachyOS repo not available.\nFalling back to linux kernel." 10 50
         KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | sed 's/linux-cachyos/linux/g')
@@ -724,11 +730,17 @@ fi
 
 # Persist CachyOS repo into installed system for future updates
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
+    CACHY_BASE="https://mirror.cachyos.org/repo/x86_64/cachyos"
     artix-chroot /mnt bash -c "
-        curl -sO 'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst'
-        curl -sO 'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
-        pacman -U --noconfirm cachyos-keyring-*.pkg.tar.zst cachyos-mirrorlist-*.pkg.tar.zst
-        rm -f cachyos-keyring-*.pkg.tar.zst cachyos-mirrorlist-*.pkg.tar.zst
+        mkdir -p /tmp/cachyos-setup
+        curl -fL --retry 3 -o /tmp/cachyos-setup/cachyos-keyring.pkg.tar.zst \
+            '${CACHY_BASE}/cachyos-keyring-20240331-1-any.pkg.tar.zst'
+        curl -fL --retry 3 -o /tmp/cachyos-setup/cachyos-mirrorlist.pkg.tar.zst \
+            '${CACHY_BASE}/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
+        pacman -U --noconfirm \
+            /tmp/cachyos-setup/cachyos-keyring.pkg.tar.zst \
+            /tmp/cachyos-setup/cachyos-mirrorlist.pkg.tar.zst
+        rm -rf /tmp/cachyos-setup
     "
     grep -q '\[cachyos\]' /mnt/etc/pacman.conf || \
         printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /mnt/etc/pacman.conf
@@ -1108,24 +1120,6 @@ Section "Screen"
     EndSubSection
 EndSection
 EOF
-            cat > /mnt/home/"$USERNAME"/.xinitrc << 'EOF'
-#!/bin/sh
-# Kill any stale X locks
-rm -f /tmp/.X*-lock /tmp/.X11-unix/X*
-
-# Disable screen blanking and power management
-xset s off
-xset -dpms
-xset s noblank
-
-# Font paths
-xset fp+ /usr/share/fonts/TTF
-xset fp+ /usr/share/fonts/dejavu
-xset fp rehash
-
-exec icewm-session
-EOF
-            chmod +x /mnt/home/"$USERNAME"/.xinitrc
             ;;
         Hyprland)
             artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland pavucontrol
@@ -1173,6 +1167,76 @@ EOF
                     echo "session required pam_elogind.so" >> "$PAM_PATH"
                 fi
             done
+
+# =========================
+# XINITRC FOR BARE WMs
+# =========================
+BARE_WMS_SELECTED=""
+for _wm in i3 XMonad Openbox Fluxbox IceWM; do
+    echo "$DE_CHOICES" | grep -qw "$_wm" && BARE_WMS_SELECTED="$BARE_WMS_SELECTED $_wm"
+done
+BARE_WMS_SELECTED="${BARE_WMS_SELECTED# }"  # trim leading space
+
+if [ -n "$BARE_WMS_SELECTED" ]; then
+    # Build exec command map
+    wm_exec() {
+        case "$1" in
+            i3)      echo "exec i3" ;;
+            XMonad)  echo "exec xmonad" ;;
+            Openbox) echo "exec openbox-session" ;;
+            Fluxbox) echo "exec startfluxbox" ;;
+            IceWM)   echo "exec icewm-session" ;;
+        esac
+    }
+
+    WM_COUNT=$(echo "$BARE_WMS_SELECTED" | wc -w)
+
+    {
+        cat << 'XINITRC_HEADER'
+#!/bin/sh
+# Kill any stale X locks
+rm -f /tmp/.X*-lock /tmp/.X11-unix/X*
+
+# Screen settings
+xset s off
+xset -dpms
+xset s noblank
+
+# Font paths
+xset fp+ /usr/share/fonts/TTF 2>/dev/null
+xset fp+ /usr/share/fonts/dejavu 2>/dev/null
+xset fp rehash 2>/dev/null
+
+XINITRC_HEADER
+
+        if [ "$WM_COUNT" -eq 1 ]; then
+            # Single WM — exec directly
+            wm_exec "$BARE_WMS_SELECTED"
+        else
+            # Multiple WMs — show a simple select menu at login
+            echo '# Multiple WMs installed — pick one at login'
+            echo 'echo "Select window manager:"'
+            IDX=1
+            for _wm in $BARE_WMS_SELECTED; do
+                echo "echo \"  $IDX) $_wm\""
+                IDX=$(( IDX + 1 ))
+            done
+            echo 'printf "Choice: "'
+            echo 'read -r _choice'
+            IDX=1
+            for _wm in $BARE_WMS_SELECTED; do
+                echo "[ \"\$_choice\" = \"$IDX\" ] && $(wm_exec $_wm)"
+                IDX=$(( IDX + 1 ))
+            done
+            # Default to first WM if no valid choice
+            echo "# Default fallback"
+            wm_exec "$(echo "$BARE_WMS_SELECTED" | awk '{print $1}')"
+        fi
+    } > /mnt/home/"$USERNAME"/.xinitrc
+    chmod +x /mnt/home/"$USERNAME"/.xinitrc
+    chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.xinitrc
+fi
+
             # Stub out systemd dbus interfaces that cosmic-osd/cosmic-settings poll for
             # Without these stubs they spin at 99% CPU waiting for a response that never comes
             mkdir -p /mnt/usr/share/dbus-1/services

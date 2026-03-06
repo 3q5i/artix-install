@@ -649,9 +649,9 @@ if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     # Download CachyOS keyring and mirrorlist to a known temp dir
     CACHY_TMP=$(mktemp -d /tmp/cachyos-XXXXXX)
     CACHY_BASE="https://mirror.cachyos.org/repo/x86_64/cachyos"
-    curl -fL --retry 3 -o "$CACHY_TMP/cachyos-keyring.pkg.tar.zst" \
+    curl -fkL --retry 3 -o "$CACHY_TMP/cachyos-keyring.pkg.tar.zst" \
         "${CACHY_BASE}/cachyos-keyring-20240331-1-any.pkg.tar.zst"
-    curl -fL --retry 3 -o "$CACHY_TMP/cachyos-mirrorlist.pkg.tar.zst" \
+    curl -fkL --retry 3 -o "$CACHY_TMP/cachyos-mirrorlist.pkg.tar.zst" \
         "${CACHY_BASE}/cachyos-mirrorlist-22-1-any.pkg.tar.zst"
     pacman-key --init
     pacman -U --noconfirm \
@@ -733,9 +733,9 @@ if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     CACHY_BASE="https://mirror.cachyos.org/repo/x86_64/cachyos"
     artix-chroot /mnt bash -c "
         mkdir -p /tmp/cachyos-setup
-        curl -fL --retry 3 -o /tmp/cachyos-setup/cachyos-keyring.pkg.tar.zst \
+        curl -fkL --retry 3 -o /tmp/cachyos-setup/cachyos-keyring.pkg.tar.zst \
             '${CACHY_BASE}/cachyos-keyring-20240331-1-any.pkg.tar.zst'
-        curl -fL --retry 3 -o /tmp/cachyos-setup/cachyos-mirrorlist.pkg.tar.zst \
+        curl -fkL --retry 3 -o /tmp/cachyos-setup/cachyos-mirrorlist.pkg.tar.zst \
             '${CACHY_BASE}/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
         pacman -U --noconfirm \
             /tmp/cachyos-setup/cachyos-keyring.pkg.tar.zst \

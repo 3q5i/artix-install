@@ -148,7 +148,7 @@ fi
 LOCALE=$(pick "Locale" "grep UTF-8 /usr/share/i18n/SUPPORTED | awk '{print \$1}'")
 TIMEZONE=$(pick "Timezone" "awk '/^[^#]/{print \$3}' /usr/share/zoneinfo/zone.tab | sort")
 
-KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 30 74 22 \
+KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 30 74 23 \
     "us"        "English (US)" \
     "uk"        "English (UK)" \
     "us-intl"   "English (US International)" \
@@ -172,6 +172,7 @@ KB_LAYOUT=$(whiptail --title "$TITLE" --menu "Keyboard Layout" 30 74 22 \
     "cz"        "Czech" \
     "cz-qwerty" "Czech (QWERTY)" \
     "sk"        "Slovak" \
+    "hr"        "Croatian" \
     "ro"        "Romanian" \
     "bg"        "Bulgarian" \
     "gr"        "Greek" \

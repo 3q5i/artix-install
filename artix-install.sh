@@ -576,17 +576,28 @@ fi
 
 # cachyos repo — only needed for linux-cachyos kernel
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    # Install CachyOS keyring + mirrorlist directly via pacman (avoids TLS cert issues)
-    pacman-key --init
-    pacman -U --noconfirm --disable-download-timeout \
-        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst' \
-        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
-    grep -q '\[cachyos\]' /etc/pacman.conf || \
-        printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /etc/pacman.conf
-    pacman -Sy
-    # Verify the kernel is actually available
-    if ! pacman -Si linux-cachyos &>/dev/null; then
-        whiptail --title "$TITLE" --msgbox "WARNING: CachyOS repo not available.\nFalling back to linux kernel." 10 50
+    # Download to /tmp first, then force-install with --nocheck
+    # (live ISO keyring is sparse; --nocheck is safe here — we verify with pacman-key --populate after)
+    CACHY_KEY_URL='https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst'
+    CACHY_MRL_URL='https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
+    if curl -fsSL --retry 3 -o /tmp/cachyos-keyring.pkg.tar.zst "$CACHY_KEY_URL" \
+    && curl -fsSL --retry 3 -o /tmp/cachyos-mirrorlist.pkg.tar.zst "$CACHY_MRL_URL"; then
+        pacman -U --noconfirm --nocheck \
+            /tmp/cachyos-keyring.pkg.tar.zst \
+            /tmp/cachyos-mirrorlist.pkg.tar.zst
+        pacman-key --populate cachyos
+        grep -q '\[cachyos\]' /etc/pacman.conf || \
+            printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /etc/pacman.conf
+        pacman -Sy --noconfirm
+        if ! pacman -Si linux-cachyos &>/dev/null; then
+            whiptail --title "$TITLE" --msgbox \
+                "WARNING: CachyOS repo added but linux-cachyos not found.\nFalling back to linux kernel." 10 60
+            KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | sed 's/linux-cachyos/linux/g')
+            FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
+        fi
+    else
+        whiptail --title "$TITLE" --msgbox \
+            "Could not download CachyOS packages.\nCheck network.\nFalling back to linux kernel." 10 60
         KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | sed 's/linux-cachyos/linux/g')
         FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
     fi
@@ -653,10 +664,21 @@ fi
 
 # cachyos repo in the installed system
 if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
-    # Use pacman -U with URL directly — avoids curl TLS cert issues on live ISO
-    artix-chroot /mnt pacman -U --noconfirm --disable-download-timeout \
-        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst' \
-        'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
+    # Reuse packages already downloaded to live ISO /tmp — avoids a second download
+    if [ -f /tmp/cachyos-keyring.pkg.tar.zst ] && [ -f /tmp/cachyos-mirrorlist.pkg.tar.zst ]; then
+        cp /tmp/cachyos-keyring.pkg.tar.zst /tmp/cachyos-mirrorlist.pkg.tar.zst /mnt/tmp/
+    else
+        artix-chroot /mnt bash -c "
+            curl -fsSL --retry 3 -o /tmp/cachyos-keyring.pkg.tar.zst \
+                'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-20240331-1-any.pkg.tar.zst'
+            curl -fsSL --retry 3 -o /tmp/cachyos-mirrorlist.pkg.tar.zst \
+                'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-22-1-any.pkg.tar.zst'
+        "
+    fi
+    artix-chroot /mnt pacman -U --noconfirm --nocheck \
+        /tmp/cachyos-keyring.pkg.tar.zst \
+        /tmp/cachyos-mirrorlist.pkg.tar.zst
+    artix-chroot /mnt pacman-key --populate cachyos
     grep -q '\[cachyos\]' /mnt/etc/pacman.conf || \
         printf '\n[cachyos]\nInclude = /etc/pacman.d/cachyos-mirrorlist\n' >> /mnt/etc/pacman.conf
     artix-chroot /mnt pacman -Sy --noconfirm

@@ -12,9 +12,11 @@ set -o pipefail
        umount -R /mnt 2>/dev/null || true
        exit 1' ERR
 
-# unmount everything if its already mounted from a previous run
-umount -R /mnt 2>/dev/null || true
+# unmount/cleanup everything from a previous run so the script is re-runnable
 swapoff -a 2>/dev/null || true
+umount -R /mnt 2>/dev/null || true
+# close any leftover LUKS mapping
+cryptsetup close cryptroot 2>/dev/null || true
 
 # =========================
 # ROOT CHECK
@@ -1410,13 +1412,10 @@ fi
 # install AUR-only extra packages if AUR helper selected
 if [ -n "${AUR_EXTRA:-}" ] && [ "$AUR_HELPER" != "none" ]; then
     for _aur_pkg in $AUR_EXTRA; do
-        # _aur_pkg expands here (outer shell) before being passed to bash -c
         artix-chroot /mnt bash -c "
-            cd /tmp
-            git clone https://aur.archlinux.org/${_aur_pkg}.git
+            git clone https://aur.archlinux.org/${_aur_pkg}.git /tmp/${_aur_pkg}
             chown -R ${USERNAME}:${USERNAME} /tmp/${_aur_pkg}
-            cd /tmp/${_aur_pkg}
-            sudo -u ${USERNAME} MAKEFLAGS='-j\$(nproc)' makepkg --noconfirm --needed -s
+            sudo -u ${USERNAME} bash -c 'cd /tmp/${_aur_pkg} && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -s'
             pacman -U --noconfirm /tmp/${_aur_pkg}/*.pkg.tar.zst
             rm -rf /tmp/${_aur_pkg}
         "
@@ -1429,11 +1428,9 @@ fi
 if [ "$AUR_HELPER" != "none" ]; then
     artix-chroot /mnt pacman -S --noconfirm git base-devel
     artix-chroot /mnt bash -c "
-        cd /tmp
-        git clone https://aur.archlinux.org/${AUR_HELPER}.git
+        git clone https://aur.archlinux.org/${AUR_HELPER}.git /tmp/${AUR_HELPER}
         chown -R ${USERNAME}:${USERNAME} /tmp/${AUR_HELPER}
-        cd /tmp/${AUR_HELPER}
-        sudo -u ${USERNAME} MAKEFLAGS='-j\$(nproc)' makepkg --noconfirm --needed -s
+        sudo -u ${USERNAME} bash -c 'cd /tmp/${AUR_HELPER} && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -s'
         pacman -U --noconfirm /tmp/${AUR_HELPER}/*.pkg.tar.zst
         rm -rf /tmp/${AUR_HELPER}
     "

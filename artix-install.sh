@@ -29,7 +29,58 @@ fi
 clear
 TITLE="Artix Master Installer"
 
+# =========================
+# TEST / FAST MODE
+# =========================
+# Pass --test as first arg to skip all prompts and do a fast CLI install
+# Uses: first disk found, ext4, no swap, no encrypt, dinit, NM, linux kernel,
+#       AMD cpu/gpu, GRUB, no DE, hostname=artix, user=user, pw=idk
+#       AUR=yay, extra=alacritty feh picom rofi
+TEST_MODE=0
+if [ "${1:-}" = "--test" ]; then
+    TEST_MODE=1
+    DISK=$(lsblk -dpno NAME | grep -v loop | head -1)
+    FS="ext4"
+    SWAP="None"
+    ENCRYPT=0; REAL_ROOT=""; LUKS_CMDLINE=""
+    INIT="dinit"
+    LOCALE="en_US.UTF-8"
+    TIMEZONE="Europe/London"
+    KB_LAYOUT="us"; VC_KEYMAP="us"
+    HOSTNAME="artix"
+    USERNAME="user"
+    ROOTPW="idk"; USERPW="idk"
+    INSTALL_TYPE="CLI"; DE_CHOICES="CLI"
+    KERNEL_CHOICES="linux"; FIRST_KERNEL="linux"
+    CPU_VENDOR="amd"; UCODE="amd-ucode"
+    GPU_CHOICE="amd"; GPU="mesa vulkan-radeon"
+    UEFI_ORIG="$UEFI"
+    BOOT="grub"
+    USE_XLIBRE=0; XORG_PKGS=""
+    NET_CHOICE="NM"
+    AUDIO_PKGS=""
+    EXTRA_PKGS="alacritty feh picom rofi"
+    AUR_HELPER="yay"
+    # partition layout
+    [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
+    if [ "$UEFI" = "1" ]; then
+        PART_DEVS=("${DISK}${P}1" "${DISK}${P}2")
+        PART_SIZES=("1" "0")
+        PART_TYPES=("EFI" "root")
+        EFI="${DISK}${P}1"; ROOT="${DISK}${P}2"
+    else
+        PART_DEVS=("${DISK}${P}1")
+        PART_SIZES=("0")
+        PART_TYPES=("root")
+        EFI=""; ROOT="${DISK}${P}1"
+    fi
+    DUALBOOT=0; SWAP_PART=""
+    echo "==> TEST MODE: disk=$DISK boot=$BOOT uefi=$UEFI"
+fi
+
+if [ "$TEST_MODE" = "0" ]; then
 whiptail --title "$TITLE" --msgbox "WARNING: This will erase the selected disk.\nMake sure you have backups.\n\nPress Enter to begin." 10 55
+fi
 
 # =========================
 # HELPERS
@@ -64,6 +115,7 @@ pick() {
 # =========================
 # INIT SYSTEM
 # =========================
+if [ "$TEST_MODE" = "0" ]; then
 INIT=$(whiptail --title "$TITLE" --menu "Init System" 12 60 2 \
     "dinit"  "dinit  -- fast, dependency-based (recommended)" \
     "openrc" "openrc -- traditional, widely supported" \
@@ -303,8 +355,10 @@ NET_CHOICE=$(whiptail --title "$TITLE" --menu \
     "iwd"    "iwd     -- wifi + ethernet, ~5MB" \
     "NM"     "NetworkManager -- full featured, ~30MB" \
     3>&1 1>&2 2>&3) || NET_CHOICE="NM"
+fi  # end TEST_MODE=0 Q&A
 
 # partition manager
+if [ "$TEST_MODE" = "0" ]; then
 PART_DEVS=()
 PART_SIZES=()
 PART_TYPES=()
@@ -437,6 +491,8 @@ while true; do
             ;;
     esac
 done
+
+fi  # end TEST_MODE=0 partition manager
 
 if [ "$DUALBOOT" = "0" ]; then
     # Fresh install — wipe and write new partition table via sfdisk
@@ -1349,7 +1405,24 @@ esac
 # done
 
 gauge 95 "Extra packages..."
+# Ensure Arch [extra] repo is available — many common packages (alacritty, rofi,
+# picom, feh, discord, obsidian, etc.) live there, not in Artix's own repos
+if ! grep -q '\[extra\]' /mnt/etc/pacman.conf; then
+    artix-chroot /mnt pacman -S --noconfirm --needed artix-archlinux-support
+    printf '
+# Arch repos
+[extra]
+Include = /etc/pacman.d/mirrorlist-arch
+[community]
+Include = /etc/pacman.d/mirrorlist-arch
+[multilib]
+Include = /etc/pacman.d/mirrorlist-arch
+' >> /mnt/etc/pacman.conf
+    artix-chroot /mnt pacman -Sy --noconfirm
+fi
+
 # package picker — slackware style, pick what you want
+if [ "$TEST_MODE" = "0" ]; then
 EXTRA_PKGS=$(whiptail --title "$TITLE" --checklist \
     "Extra packages (space to toggle)" 34 65 24 \
     "firefox"           "Firefox browser"                   OFF \
@@ -1395,6 +1468,7 @@ AUR_HELPER=$(whiptail --title "$TITLE" --menu "AUR helper" 12 55 3 \
     "paru" "paru (Rust, recommended)" \
     "yay"  "yay (Go)" \
     3>&1 1>&2 2>&3) || AUR_HELPER="none"
+fi  # end TEST_MODE=0 extras Q&A
 
 # install pacman packages first
 if [ -n "$EXTRA_PKGS" ]; then

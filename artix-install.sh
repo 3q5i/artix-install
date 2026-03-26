@@ -632,12 +632,13 @@ if echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     set +e  # handle errors ourselves — pacman-key exits non-zero on various warnings
 
     # Step 1: resolve current package filenames dynamically from the repo db
-    # (hardcoding the date in the filename breaks when CachyOS releases a new keyring)
+    # Pull filenames from the repo .db (a tar of desc files) — more reliable than scraping HTML
     CACHY_BASE='https://mirror.cachyos.org/repo/x86_64/cachyos'
-    _cachy_keyring_pkg=$(curl -fsSL --retry 3 "${CACHY_BASE}/" 2>/dev/null \
-        | grep -o 'cachyos-keyring[^"]*\.pkg\.tar\.zst' | grep -v '\.sig' | sort -V | tail -1)
-    _cachy_mirrorlist_pkg=$(curl -fsSL --retry 3 "${CACHY_BASE}/" 2>/dev/null \
-        | grep -o 'cachyos-mirrorlist[^"]*\.pkg\.tar\.zst' | grep -v '\.sig' | sort -V | tail -1)
+    curl -fsSL --retry 3 -o /tmp/cachyos.db "${CACHY_BASE}/cachyos.db"
+    _cachy_keyring_pkg=$(tar -xOf /tmp/cachyos.db --wildcards '*/desc' 2>/dev/null \
+        | awk '/%FILENAME%/{getline; if (/cachyos-keyring/) print}' | tail -1)
+    _cachy_mirrorlist_pkg=$(tar -xOf /tmp/cachyos.db --wildcards '*/desc' 2>/dev/null \
+        | awk '/%FILENAME%/{getline; if (/cachyos-mirrorlist/) print}' | tail -1)
 
     if [ -n "$_cachy_keyring_pkg" ] && [ -n "$_cachy_mirrorlist_pkg" ]; then
         curl -fsSL --retry 3 -o /tmp/cachyos-keyring.pkg.tar.zst \

@@ -28,11 +28,17 @@ A simple TUI installer for Artix Linux with dinit or openrc that gives you a min
 - Optional DE/WM(note that I ship with the base verison of these but iam considering shipping riced versions of these): Cosmic(perfomance issues), KDE Plasma, XFCE, LXQt, Hyprland, Moksha ///the following wms dont configure audio to reduce bloat: i3, XMonad, ,Icewm, Fluxbox or CLI-only
 
 ## Usage
-Boot the Artix live ISO, connect to wifi via nmtui, then run the following command as root
+Boot the Artix live ISO(please use the weekly release the stable one is broken), connect to wifi via nmtui, then run the following command as root
 
 ```
 curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install.sh | bash
 ```
+
+if you want the testing branch run this command instead
+```
+curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install-testing.sh | bash
+```
+
 
 Then just go through the installer it is fairly simple and sit back and relax.
 <img width="919" height="992" alt="artix" src="https://github.com/user-attachments/assets/6dd221dc-adae-4560-8f51-e5359297c5e7" />
@@ -43,6 +49,6 @@ Then just go through the installer it is fairly simple and sit back and relax.
 ## Things to add
 - [ ] s6 and runit
 - [ ] add MORE wms
-- [ ] improve the ram usage
 - [ ] add my own custom kernel
 - [ ] add a option to prerice your wm
+- [ ] fix the cosmic performance problem

@@ -35,14 +35,13 @@ TITLE="Artix Master Installer"
 # Pass --test as first arg to skip all prompts and do a fast CLI install
 # Uses: first disk found, ext4, no swap, no encrypt, dinit, NM, linux kernel,
 #       AMD cpu/gpu, GRUB, no DE, hostname=artix, user=user, pw=idk
-#       AUR=yay, extra=alacritty feh picom rofi
 TEST_MODE=0
 if [ "${1:-}" = "--test" ]; then
     TEST_MODE=1
     DISK=$(lsblk -dpno NAME | grep -v loop | head -1)
     FS="ext4"
     SWAP="None"
-    ENCRYPT=0; REAL_ROOT=""; LUKS_CMDLINE=""
+    ENCRYPT=0; REAL_ROOT=""; LUKS_CMDLINE=""; LUKS_PW=""
     INIT="dinit"
     LOCALE="en_US.UTF-8"
     TIMEZONE="Europe/London"
@@ -77,7 +76,11 @@ if [ "${1:-}" = "--test" ]; then
     declare -A PART_FS
     EXTRA_MOUNTS=()
     ZFS_ROOT=0
-    echo "==> TEST MODE: disk=$DISK boot=$BOOT uefi=$UEFI" --title "$TITLE" --msgbox "WARNING: This will erase the selected disk.\nMake sure you have backups.\n\nPress Enter to begin." 10 55
+    echo "==> TEST MODE: disk=$DISK boot=$BOOT uefi=$UEFI"
+fi
+
+if [ "$TEST_MODE" = "0" ]; then
+    whiptail --title "$TITLE" --msgbox "WARNING: This will erase the selected disk.\nMake sure you have backups.\n\nPress Enter to begin." 10 55
 fi
 
 # =========================
@@ -599,7 +602,8 @@ mkdir -p /mnt/boot
 [ "$UEFI" = "1" ] && mount "$EFI" /mnt/boot
 
 # Mount extra partitions (from manual mode)
-for _em in "${EXTRA_MOUNTS[@]:-}"; do
+for _em in "${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}"; do
+    [ -z "$_em" ] && continue
     _em_dev="${_em%%:*}"
     _em_mp="${_em##*:}"
     _em_fs="${PART_FS[$_em_dev]:-ext4}"
@@ -1509,7 +1513,7 @@ EOF
     refind)
         artix-chroot /mnt pacman -S --noconfirm refind efibootmgr
         artix-chroot /mnt refind-install
-        ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
+        ROOT_UUID=$(blkid -s UUID -o value "${REAL_ROOT:-$ROOT}")
         if [ "$ENCRYPT" = "1" ]; then
             printf '"Boot with standard options"  "%s root=/dev/mapper/cryptroot rw quiet"\n' \
                 "$LUKS_CMDLINE" > /mnt/boot/refind_linux.conf

@@ -56,7 +56,6 @@ if [ "${1:-}" = "--test" ]; then
     GPU_CHOICE="amd"; GPU="mesa vulkan-radeon"
     UEFI_ORIG="$UEFI"
     BOOT="grub"
-    USE_XLIBRE=0; XORG_PKGS=""
     NET_CHOICE="NM"
     AUDIO_PKGS=""
     PRIV_ESC="doas"
@@ -75,6 +74,9 @@ if [ "${1:-}" = "--test" ]; then
         EFI=""; ROOT="${DISK}${P}1"
     fi
     DUALBOOT=0; SWAP_PART=""
+    declare -A PART_FS
+    EXTRA_MOUNTS=()
+    ZFS_ROOT=0
     echo "==> TEST MODE: disk=$DISK boot=$BOOT uefi=$UEFI" --title "$TITLE" --msgbox "WARNING: This will erase the selected disk.\nMake sure you have backups.\n\nPress Enter to begin." 10 55
 fi
 
@@ -93,6 +95,23 @@ get_password() {
 }
 
 # no pick() helper needed — using curated menus instead
+
+# per-partition filesystem picker
+pick_fs() {
+    local _title="$1" _default="${2:-ext4}"
+    whiptail --title "$TITLE" --menu "$_title" 18 65 10 \
+        "ext4"   "Ext4 — solid, widely supported" \
+        "btrfs"  "Btrfs — snapshots, compression" \
+        "xfs"    "XFS — high performance" \
+        "f2fs"   "F2FS — flash-friendly" \
+        "zfs"    "ZFS — advanced (needs zfs-dkms)" \
+        "jfs"    "JFS — low CPU journaled FS" \
+        "nilfs2" "NILFS2 — continuous snapshots" \
+        "vfat"   "FAT32 — for EFI/compatibility" \
+        "exfat"  "exFAT — large files, cross-platform" \
+        "ntfs"   "NTFS — Windows compatibility" \
+        3>&1 1>&2 2>&3
+}
 
 # =========================
 # =========================
@@ -126,7 +145,6 @@ KERNEL_CHOICES="linux"; FIRST_KERNEL="linux"
 CPU_VENDOR="amd"; UCODE="amd-ucode"
 GPU_CHOICE="vm"; GPU="mesa"
 BOOT="grub"
-USE_XLIBRE=0
 NET_CHOICE="NM"
 PRIV_ESC="doas"
 MULTILIB=0
@@ -152,11 +170,14 @@ case "$STEP" in
     DISK="$_v"; STEP=$(( STEP + 1 )) ;;
 
 3) # Filesystem
-    _v=$(whiptail --title "$TITLE" --menu "Root Filesystem  [3/$STEP_MAX]" 12 60 4 \
-        "ext4"  "Ext4 (recommended)" \
-        "btrfs" "Btrfs" \
-        "xfs"   "XFS" \
-        "f2fs"  "F2FS (flash-friendly)" \
+    _v=$(whiptail --title "$TITLE" --menu "Root Filesystem  [3/$STEP_MAX]" 16 65 8 \
+        "ext4"  "Ext4 — solid, widely supported (recommended)" \
+        "btrfs" "Btrfs — snapshots, compression, subvolumes" \
+        "xfs"   "XFS — high performance, large files" \
+        "f2fs"  "F2FS — flash-friendly (SSDs/NVMe)" \
+        "zfs"   "ZFS — advanced, needs zfs-dkms (experimental)" \
+        "jfs"   "JFS — IBM journaled FS, low CPU usage" \
+        "nilfs2" "NILFS2 — continuous snapshotting" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     FS="$_v"; STEP=$(( STEP + 1 )) ;;
 
@@ -355,17 +376,7 @@ case "$STEP" in
     fi
     STEP=$(( STEP + 1 )) ;;
 
-13) # Xorg + Network
-    USE_XLIBRE=0
-    if [ "$DE_CHOICES" != "CLI" ] && \
-       ! echo "$DE_CHOICES" | grep -qw "Cosmic" && \
-       ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
-        if whiptail --title "$TITLE" --yesno \
-            "XLibre or Xorg?  [13/$STEP_MAX]\n\nXLibre is Artix's actively maintained Xorg fork.\nTearFree by default, from galaxy-gremlins repo.\n\nYes = XLibre   No = standard Xorg" \
-            12 60; then
-            USE_XLIBRE=1
-        fi
-    fi
+13) # Network
     _v=$(whiptail --title "$TITLE" --menu "Network Stack  [13/$STEP_MAX]" 13 65 3 \
         "dhcpcd" "dhcpcd  — ethernet only, ~2MB" \
         "iwd"    "iwd     — wifi + ethernet, ~5MB" \
@@ -383,6 +394,8 @@ fi  # end TEST_MODE=0 Q&A
 
 # partition manager
 if [ "$TEST_MODE" = "0" ]; then
+declare -A PART_FS
+EXTRA_MOUNTS=()
 DISK_SIZE=$(lsblk -bdno SIZE "$DISK" 2>/dev/null || echo 0)
 DISK_SIZE_GB=$(( DISK_SIZE / 1024 / 1024 / 1024 ))
 EFI=""; ROOT=""; DUALBOOT=0
@@ -411,19 +424,41 @@ case "$PART_MODE" in
         ;;
     manual)
         whiptail --title "$TITLE" --msgbox \
-            "cfdisk will open now.\n\nCreate your partitions and write the table.\nAfter exiting you will select which partitions to use." \
-            10 60
+            "cfdisk will open now.\n\nCreate your partitions and write the table.\nAfter exiting you select which partitions to use and their filesystems." \
+            10 62
         cfdisk "$DISK"
         udevadm settle
-        # Let user pick root (and EFI if UEFI)
         mapfile -t _parts < <(lsblk -pno NAME,SIZE,FSTYPE "$DISK" | grep -v "^$DISK " | \
             awk '{print $1; printf "%s %s\n", $2, ($3=="" ? "unformatted" : $3)}')
         if [ "$UEFI" = "1" ]; then
             EFI=$(whiptail --title "$TITLE" --menu "Select EFI partition" \
-                16 60 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
+                16 62 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
+            _efi_fs=$(pick_fs "Filesystem for EFI partition" "vfat") || _efi_fs="vfat"
+            PART_FS["$EFI"]="$_efi_fs"
         fi
-        ROOT=$(whiptail --title "$TITLE" --menu "Select root partition (will be formatted as $FS)" \
-            16 60 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
+        ROOT=$(whiptail --title "$TITLE" --menu "Select root partition" \
+            16 62 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
+        _root_fs=$(pick_fs "Filesystem for root partition" "$FS") || _root_fs="$FS"
+        FS="$_root_fs"
+        PART_FS["$ROOT"]="$_root_fs"
+        # offer extra partitions (home, data, etc.)
+        while true; do
+            _remain_args=("skip" "Done — no more partitions")
+            for _pp in "${_parts[@]}"; do
+                [[ "$_pp" == /dev/* ]] && [ "$_pp" != "$EFI" ] && [ "$_pp" != "$ROOT" ] && \
+                    _remain_args+=("$_pp" "$(lsblk -dno SIZE "$_pp" 2>/dev/null)")
+            done
+            [ ${#_remain_args[@]} -le 2 ] && break
+            _extra=$(whiptail --title "$TITLE" --menu \
+                "Assign more partitions? (e.g. /home)" \
+                16 62 8 "${_remain_args[@]}" 3>&1 1>&2 2>&3) || break
+            [ "$_extra" = "skip" ] && break
+            _extra_mp=$(whiptail --title "$TITLE" --inputbox \
+                "Mount point for $_extra" 10 55 "/home" 3>&1 1>&2 2>&3) || break
+            _extra_fs=$(pick_fs "Filesystem for $_extra ($_extra_mp)") || _extra_fs="ext4"
+            PART_FS["$_extra"]="$_extra_fs"
+            EXTRA_MOUNTS+=("$_extra:$_extra_mp")
+        done
         PART_DEVS=(); PART_SIZES=(); PART_TYPES=()
         [ "$UEFI" = "1" ] && { PART_DEVS+=("$EFI"); PART_SIZES+=("0"); PART_TYPES+=("EFI"); }
         PART_DEVS+=("$ROOT"); PART_SIZES+=("0"); PART_TYPES+=("root")
@@ -499,18 +534,77 @@ if [ "$ENCRYPT" = "1" ]; then
     echo -n "$LUKS_PW" | cryptsetup open "$ROOT" cryptroot -
     REAL_ROOT="$ROOT"
     ROOT="/dev/mapper/cryptroot"
+    PART_FS["$ROOT"]="${PART_FS[$REAL_ROOT]:-$FS}"
 fi
 
-case $FS in
-    ext4)  mkfs.ext4  -F "$ROOT" ;;
-    btrfs) mkfs.btrfs -f "$ROOT" ;;
-    xfs)   mkfs.xfs   -f "$ROOT" ;;
-    f2fs)  mkfs.f2fs  -f "$ROOT" ;;
-esac
+# format_part <device> <fstype>
+format_part() {
+    local _dev="$1" _fs="${2:-ext4}"
+    case "$_fs" in
+        ext4)   mkfs.ext4   -F  "$_dev" ;;
+        btrfs)  mkfs.btrfs  -f  "$_dev" ;;
+        xfs)    mkfs.xfs    -f  "$_dev" ;;
+        f2fs)   mkfs.f2fs   -f  "$_dev" ;;
+        jfs)    mkfs.jfs    -q  "$_dev" ;;
+        nilfs2) mkfs.nilfs2 -f  "$_dev" ;;
+        vfat)   mkfs.fat -F32  "$_dev" ;;
+        exfat)  mkfs.exfat      "$_dev" ;;
+        ntfs)   mkfs.ntfs  -f  "$_dev" ;;
+        zfs)
+            # ZFS needs zfs-dkms on the live ISO
+            if ! command -v zpool &>/dev/null; then
+                pacman -Sy --noconfirm zfs-dkms zfs-utils 2>/dev/null || \
+                pacman -Sy --noconfirm zfs-linux 2>/dev/null || true
+                modprobe zfs 2>/dev/null || true
+            fi
+            # pool name: root pool = zroot, others use last path component
+            local _pool="zroot"
+            zpool create -f -o ashift=12 \
+                -O acltype=posixacl -O xattr=sa \
+                -O dnodesize=auto -O compression=lz4 \
+                -O normalization=formD -O relatime=on \
+                -O mountpoint=none \
+                "$_pool" "$_dev"
+            zfs create -o mountpoint=/ "${_pool}/root"
+            # export/import so it mounts under /mnt
+            zpool export "$_pool"
+            zpool import -d /dev -R /mnt "$_pool"
+            return
+            ;;
+        *) echo "==> Unknown FS '$_fs', defaulting to ext4"; mkfs.ext4 -F "$_dev" ;;
+    esac
+}
 
-mount "$ROOT" /mnt
+# Format EFI (always vfat unless user picked something exotic)
+[ "$UEFI" = "1" ] && [ -n "$EFI" ] && {
+    _efi_fs="${PART_FS[$EFI]:-vfat}"
+    format_part "$EFI" "$_efi_fs"
+}
+
+# Format root
+_root_fs="${PART_FS[$ROOT]:-$FS}"
+if [ "$_root_fs" = "zfs" ]; then
+    format_part "$ROOT" "zfs"
+    # ZFS import already mounted /mnt — skip normal mount below
+    ZFS_ROOT=1
+else
+    ZFS_ROOT=0
+    format_part "$ROOT" "$_root_fs"
+    mount "$ROOT" /mnt
+fi
+
 mkdir -p /mnt/boot
 [ "$UEFI" = "1" ] && mount "$EFI" /mnt/boot
+
+# Mount extra partitions (from manual mode)
+for _em in "${EXTRA_MOUNTS[@]:-}"; do
+    _em_dev="${_em%%:*}"
+    _em_mp="${_em##*:}"
+    _em_fs="${PART_FS[$_em_dev]:-ext4}"
+    [ "$_em_fs" != "zfs" ] && format_part "$_em_dev" "$_em_fs"
+    mkdir -p "/mnt${_em_mp}"
+    [ "$_em_fs" != "zfs" ] && mount "$_em_dev" "/mnt${_em_mp}"
+done
 
 # Activate swap partition now so fstabgen picks it up
 [ -n "${SWAP_PART:-}" ] && swapon "$SWAP_PART"
@@ -544,14 +638,10 @@ done
 [ "$DE_CHOICES" = "CLI" ] && BARE_WM_ONLY=0
 [ "$BARE_WM_ONLY" = "1" ] && GPU=""
 
-# XORG_PKGS set from USE_XLIBRE chosen upfront
+# XLibre is now in the main Artix [world] repo — no extra repo needed
 XORG_PKGS=""
 if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
-    if [ "$USE_XLIBRE" = "1" ]; then
-        XORG_PKGS="xlibre-xserver xlibre-xserver-common xorg-xinit"
-    else
-        XORG_PKGS="xorg-server xorg-xinit xf86-input-libinput"
-    fi
+    XORG_PKGS="xlibre-xserver xlibre-xserver-common xlibre-xf86-input-libinput xorg-xinit"
 fi
 
 # Only install audio stack for DEs that actually use it
@@ -568,12 +658,6 @@ done
 gauge 15 "Configuring repositories..."
 # XLIBRE REPO (if needed)
 # =========================
-if [ "$USE_XLIBRE" = "1" ]; then
-    grep -q '\[galaxy-gremlins\]' /etc/pacman.conf || \
-        printf '\n[galaxy-gremlins]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
-    pacman -Sy --noconfirm
-fi
-
 # =========================
 # LIQUORIX REPO (if needed)
 # =========================
@@ -649,15 +733,22 @@ if ! _do_basestrap "$FIRST_KERNEL"; then
 fi
 
 gauge 35 "Writing fstab..."
-fstabgen -U /mnt >> /mnt/etc/fstab
-
-# Persist XLibre repo and finish input driver install
-if [ "$USE_XLIBRE" = "1" ]; then
-    grep -q '\[galaxy-gremlins\]' /mnt/etc/pacman.conf || \
-        printf '\n[galaxy-gremlins]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
-    # xlibre-input-libinput conflicts with xf86-input-libinput — install after server
-    artix-chroot /mnt pacman -Sy --noconfirm
-    artix-chroot /mnt pacman -S --noconfirm xlibre-input-libinput
+if [ "${ZFS_ROOT:-0}" = "1" ]; then
+    # ZFS root: generate fstab for non-ZFS mounts only, ZFS handles itself
+    fstabgen -U /mnt | grep -v ' / ' >> /mnt/etc/fstab
+    # install ZFS support in the target
+    artix-chroot /mnt pacman -S --noconfirm zfs-dkms zfs-utils 2>/dev/null || \
+        artix-chroot /mnt pacman -S --noconfirm zfs-linux 2>/dev/null || true
+    # enable zfs service
+    if [ "$INIT" = "dinit" ]; then
+        artix-chroot /mnt ln -sf /etc/dinit.d/zfs-import /etc/dinit.d/boot.d/ 2>/dev/null || true
+        artix-chroot /mnt ln -sf /etc/dinit.d/zfs-mount  /etc/dinit.d/boot.d/ 2>/dev/null || true
+    else
+        artix-chroot /mnt rc-update add zfs-import boot 2>/dev/null || true
+        artix-chroot /mnt rc-update add zfs-mount  boot 2>/dev/null || true
+    fi
+else
+    fstabgen -U /mnt >> /mnt/etc/fstab
 fi
 
 # Encryption setup inside installed system

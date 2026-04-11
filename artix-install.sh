@@ -56,10 +56,10 @@ if [ "${1:-}" = "--test" ]; then
     GPU_CHOICE="amd"; GPU="mesa vulkan-radeon"
     UEFI_ORIG="$UEFI"
     BOOT="grub"
-    USE_XLIBRE=0; XORG_PKGS=""
     NET_CHOICE="NM"
     AUDIO_PKGS=""
     PRIV_ESC="doas"
+    MULTILIB=0
     # partition layout
     [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
     if [ "$UEFI" = "1" ]; then
@@ -74,6 +74,9 @@ if [ "${1:-}" = "--test" ]; then
         EFI=""; ROOT="${DISK}${P}1"
     fi
     DUALBOOT=0; SWAP_PART=""
+    declare -A PART_FS
+    EXTRA_MOUNTS=()
+    ZFS_ROOT=0
     echo "==> TEST MODE: disk=$DISK boot=$BOOT uefi=$UEFI" --title "$TITLE" --msgbox "WARNING: This will erase the selected disk.\nMake sure you have backups.\n\nPress Enter to begin." 10 55
 fi
 
@@ -93,6 +96,23 @@ get_password() {
 
 # no pick() helper needed — using curated menus instead
 
+# per-partition filesystem picker
+pick_fs() {
+    local _title="$1" _default="${2:-ext4}"
+    whiptail --title "$TITLE" --menu "$_title" 18 65 10 \
+        "ext4"   "Ext4 — solid, widely supported" \
+        "btrfs"  "Btrfs — snapshots, compression" \
+        "xfs"    "XFS — high performance" \
+        "f2fs"   "F2FS — flash-friendly" \
+        "zfs"    "ZFS — advanced (needs zfs-dkms)" \
+        "jfs"    "JFS — low CPU journaled FS" \
+        "nilfs2" "NILFS2 — continuous snapshots" \
+        "vfat"   "FAT32 — for EFI/compatibility" \
+        "exfat"  "exFAT — large files, cross-platform" \
+        "ntfs"   "NTFS — Windows compatibility" \
+        3>&1 1>&2 2>&3
+}
+
 # =========================
 # =========================
 # INIT SYSTEM
@@ -104,7 +124,7 @@ if [ "$TEST_MODE" = "0" ]; then
 # Step-based Q&A with back navigation
 # Each step sets variables; pressing Cancel goes back one step
 STEP=1
-STEP_MAX=12
+STEP_MAX=13
 
 # defaults (overwritten by each step)
 INIT="dinit"
@@ -125,9 +145,9 @@ KERNEL_CHOICES="linux"; FIRST_KERNEL="linux"
 CPU_VENDOR="amd"; UCODE="amd-ucode"
 GPU_CHOICE="vm"; GPU="mesa"
 BOOT="grub"
-USE_XLIBRE=0
 NET_CHOICE="NM"
 PRIV_ESC="doas"
+MULTILIB=0
 
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
 (( RAM_HALF_GB < 1  )) && RAM_HALF_GB=1
@@ -150,11 +170,14 @@ case "$STEP" in
     DISK="$_v"; STEP=$(( STEP + 1 )) ;;
 
 3) # Filesystem
-    _v=$(whiptail --title "$TITLE" --menu "Root Filesystem  [3/$STEP_MAX]" 12 60 4 \
-        "ext4"  "Ext4 (recommended)" \
-        "btrfs" "Btrfs" \
-        "xfs"   "XFS" \
-        "f2fs"  "F2FS (flash-friendly)" \
+    _v=$(whiptail --title "$TITLE" --menu "Root Filesystem  [3/$STEP_MAX]" 16 65 8 \
+        "ext4"  "Ext4 — solid, widely supported (recommended)" \
+        "btrfs" "Btrfs — snapshots, compression, subvolumes" \
+        "xfs"   "XFS — high performance, large files" \
+        "f2fs"  "F2FS — flash-friendly (SSDs/NVMe)" \
+        "zfs"   "ZFS — advanced, needs zfs-dkms (experimental)" \
+        "jfs"   "JFS — IBM journaled FS, low CPU usage" \
+        "nilfs2" "NILFS2 — continuous snapshotting" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     FS="$_v"; STEP=$(( STEP + 1 )) ;;
 
@@ -343,18 +366,18 @@ case "$STEP" in
     fi
     STEP=$(( STEP + 1 )) ;;
 
-12) # Xorg + Network
-    USE_XLIBRE=0
-    if [ "$DE_CHOICES" != "CLI" ] && \
-       ! echo "$DE_CHOICES" | grep -qw "Cosmic" && \
-       ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
-        if whiptail --title "$TITLE" --yesno \
-            "XLibre or Xorg?  [12/$STEP_MAX]\n\nXLibre is Artix's actively maintained Xorg fork.\nTearFree by default, from galaxy-gremlins repo.\n\nYes = XLibre   No = standard Xorg" \
-            12 60; then
-            USE_XLIBRE=1
-        fi
+12) # 32-bit / multilib
+    if whiptail --title "$TITLE" --yesno \
+        "32-bit support  [12/$STEP_MAX]\n\nEnable the multilib repo?\n\nRequired for: Steam, Wine, 32-bit games and apps.\nAdds ~1GB of available packages. Safe to skip if unsure." \
+        11 60; then
+        MULTILIB=1
+    else
+        MULTILIB=0
     fi
-    _v=$(whiptail --title "$TITLE" --menu "Network Stack  [12/$STEP_MAX]" 13 65 3 \
+    STEP=$(( STEP + 1 )) ;;
+
+13) # Network
+    _v=$(whiptail --title "$TITLE" --menu "Network Stack  [13/$STEP_MAX]" 13 65 3 \
         "dhcpcd" "dhcpcd  — ethernet only, ~2MB" \
         "iwd"    "iwd     — wifi + ethernet, ~5MB" \
         "NM"     "NetworkManager — full featured, ~30MB" \
@@ -371,6 +394,8 @@ fi  # end TEST_MODE=0 Q&A
 
 # partition manager
 if [ "$TEST_MODE" = "0" ]; then
+declare -A PART_FS
+EXTRA_MOUNTS=()
 DISK_SIZE=$(lsblk -bdno SIZE "$DISK" 2>/dev/null || echo 0)
 DISK_SIZE_GB=$(( DISK_SIZE / 1024 / 1024 / 1024 ))
 EFI=""; ROOT=""; DUALBOOT=0
@@ -399,19 +424,41 @@ case "$PART_MODE" in
         ;;
     manual)
         whiptail --title "$TITLE" --msgbox \
-            "cfdisk will open now.\n\nCreate your partitions and write the table.\nAfter exiting you will select which partitions to use." \
-            10 60
+            "cfdisk will open now.\n\nCreate your partitions and write the table.\nAfter exiting you select which partitions to use and their filesystems." \
+            10 62
         cfdisk "$DISK"
         udevadm settle
-        # Let user pick root (and EFI if UEFI)
         mapfile -t _parts < <(lsblk -pno NAME,SIZE,FSTYPE "$DISK" | grep -v "^$DISK " | \
             awk '{print $1; printf "%s %s\n", $2, ($3=="" ? "unformatted" : $3)}')
         if [ "$UEFI" = "1" ]; then
             EFI=$(whiptail --title "$TITLE" --menu "Select EFI partition" \
-                16 60 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
+                16 62 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
+            _efi_fs=$(pick_fs "Filesystem for EFI partition" "vfat") || _efi_fs="vfat"
+            PART_FS["$EFI"]="$_efi_fs"
         fi
-        ROOT=$(whiptail --title "$TITLE" --menu "Select root partition (will be formatted as $FS)" \
-            16 60 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
+        ROOT=$(whiptail --title "$TITLE" --menu "Select root partition" \
+            16 62 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
+        _root_fs=$(pick_fs "Filesystem for root partition" "$FS") || _root_fs="$FS"
+        FS="$_root_fs"
+        PART_FS["$ROOT"]="$_root_fs"
+        # offer extra partitions (home, data, etc.)
+        while true; do
+            _remain_args=("skip" "Done — no more partitions")
+            for _pp in "${_parts[@]}"; do
+                [[ "$_pp" == /dev/* ]] && [ "$_pp" != "$EFI" ] && [ "$_pp" != "$ROOT" ] && \
+                    _remain_args+=("$_pp" "$(lsblk -dno SIZE "$_pp" 2>/dev/null)")
+            done
+            [ ${#_remain_args[@]} -le 2 ] && break
+            _extra=$(whiptail --title "$TITLE" --menu \
+                "Assign more partitions? (e.g. /home)" \
+                16 62 8 "${_remain_args[@]}" 3>&1 1>&2 2>&3) || break
+            [ "$_extra" = "skip" ] && break
+            _extra_mp=$(whiptail --title "$TITLE" --inputbox \
+                "Mount point for $_extra" 10 55 "/home" 3>&1 1>&2 2>&3) || break
+            _extra_fs=$(pick_fs "Filesystem for $_extra ($_extra_mp)") || _extra_fs="ext4"
+            PART_FS["$_extra"]="$_extra_fs"
+            EXTRA_MOUNTS+=("$_extra:$_extra_mp")
+        done
         PART_DEVS=(); PART_SIZES=(); PART_TYPES=()
         [ "$UEFI" = "1" ] && { PART_DEVS+=("$EFI"); PART_SIZES+=("0"); PART_TYPES+=("EFI"); }
         PART_DEVS+=("$ROOT"); PART_SIZES+=("0"); PART_TYPES+=("root")
@@ -487,18 +534,77 @@ if [ "$ENCRYPT" = "1" ]; then
     echo -n "$LUKS_PW" | cryptsetup open "$ROOT" cryptroot -
     REAL_ROOT="$ROOT"
     ROOT="/dev/mapper/cryptroot"
+    PART_FS["$ROOT"]="${PART_FS[$REAL_ROOT]:-$FS}"
 fi
 
-case $FS in
-    ext4)  mkfs.ext4  -F "$ROOT" ;;
-    btrfs) mkfs.btrfs -f "$ROOT" ;;
-    xfs)   mkfs.xfs   -f "$ROOT" ;;
-    f2fs)  mkfs.f2fs  -f "$ROOT" ;;
-esac
+# format_part <device> <fstype>
+format_part() {
+    local _dev="$1" _fs="${2:-ext4}"
+    case "$_fs" in
+        ext4)   mkfs.ext4   -F  "$_dev" ;;
+        btrfs)  mkfs.btrfs  -f  "$_dev" ;;
+        xfs)    mkfs.xfs    -f  "$_dev" ;;
+        f2fs)   mkfs.f2fs   -f  "$_dev" ;;
+        jfs)    mkfs.jfs    -q  "$_dev" ;;
+        nilfs2) mkfs.nilfs2 -f  "$_dev" ;;
+        vfat)   mkfs.fat -F32  "$_dev" ;;
+        exfat)  mkfs.exfat      "$_dev" ;;
+        ntfs)   mkfs.ntfs  -f  "$_dev" ;;
+        zfs)
+            # ZFS needs zfs-dkms on the live ISO
+            if ! command -v zpool &>/dev/null; then
+                pacman -Sy --noconfirm zfs-dkms zfs-utils 2>/dev/null || \
+                pacman -Sy --noconfirm zfs-linux 2>/dev/null || true
+                modprobe zfs 2>/dev/null || true
+            fi
+            # pool name: root pool = zroot, others use last path component
+            local _pool="zroot"
+            zpool create -f -o ashift=12 \
+                -O acltype=posixacl -O xattr=sa \
+                -O dnodesize=auto -O compression=lz4 \
+                -O normalization=formD -O relatime=on \
+                -O mountpoint=none \
+                "$_pool" "$_dev"
+            zfs create -o mountpoint=/ "${_pool}/root"
+            # export/import so it mounts under /mnt
+            zpool export "$_pool"
+            zpool import -d /dev -R /mnt "$_pool"
+            return
+            ;;
+        *) echo "==> Unknown FS '$_fs', defaulting to ext4"; mkfs.ext4 -F "$_dev" ;;
+    esac
+}
 
-mount "$ROOT" /mnt
+# Format EFI (always vfat unless user picked something exotic)
+[ "$UEFI" = "1" ] && [ -n "$EFI" ] && {
+    _efi_fs="${PART_FS[$EFI]:-vfat}"
+    format_part "$EFI" "$_efi_fs"
+}
+
+# Format root
+_root_fs="${PART_FS[$ROOT]:-$FS}"
+if [ "$_root_fs" = "zfs" ]; then
+    format_part "$ROOT" "zfs"
+    # ZFS import already mounted /mnt — skip normal mount below
+    ZFS_ROOT=1
+else
+    ZFS_ROOT=0
+    format_part "$ROOT" "$_root_fs"
+    mount "$ROOT" /mnt
+fi
+
 mkdir -p /mnt/boot
 [ "$UEFI" = "1" ] && mount "$EFI" /mnt/boot
+
+# Mount extra partitions (from manual mode)
+for _em in "${EXTRA_MOUNTS[@]:-}"; do
+    _em_dev="${_em%%:*}"
+    _em_mp="${_em##*:}"
+    _em_fs="${PART_FS[$_em_dev]:-ext4}"
+    [ "$_em_fs" != "zfs" ] && format_part "$_em_dev" "$_em_fs"
+    mkdir -p "/mnt${_em_mp}"
+    [ "$_em_fs" != "zfs" ] && mount "$_em_dev" "/mnt${_em_mp}"
+done
 
 # Activate swap partition now so fstabgen picks it up
 [ -n "${SWAP_PART:-}" ] && swapon "$SWAP_PART"
@@ -532,14 +638,10 @@ done
 [ "$DE_CHOICES" = "CLI" ] && BARE_WM_ONLY=0
 [ "$BARE_WM_ONLY" = "1" ] && GPU=""
 
-# XORG_PKGS set from USE_XLIBRE chosen upfront
+# XLibre is now in the main Artix [world] repo — no extra repo needed
 XORG_PKGS=""
 if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
-    if [ "$USE_XLIBRE" = "1" ]; then
-        XORG_PKGS="xlibre-xserver xlibre-xserver-common xorg-xinit"
-    else
-        XORG_PKGS="xorg-server xorg-xinit xf86-input-libinput"
-    fi
+    XORG_PKGS="xlibre-xserver xlibre-xserver-common xlibre-xf86-input-libinput xorg-xinit"
 fi
 
 # Only install audio stack for DEs that actually use it
@@ -556,12 +658,6 @@ done
 gauge 15 "Configuring repositories..."
 # XLIBRE REPO (if needed)
 # =========================
-if [ "$USE_XLIBRE" = "1" ]; then
-    grep -q '\[galaxy-gremlins\]' /etc/pacman.conf || \
-        printf '\n[galaxy-gremlins]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
-    pacman -Sy --noconfirm
-fi
-
 # =========================
 # LIQUORIX REPO (if needed)
 # =========================
@@ -617,26 +713,42 @@ gauge 20 "Installing base system (this takes a while)..."
 # =========================
 # BASESTRAP
 # =========================
-basestrap /mnt \
-    base "$FIRST_KERNEL" linux-firmware $UCODE \
-    $([ "$INIT" = "dinit" ] && echo "dinit elogind-dinit dbus-dinit" || echo "openrc elogind-openrc dbus-openrc") \
-    $([ "$NET_CHOICE" = "NM" ] && { [ "$INIT" = "dinit" ] && echo "networkmanager networkmanager-dinit" || echo "networkmanager networkmanager-openrc"; }) \
-    $([ "$PRIV_ESC" = "sudo" ] && echo "sudo" || echo "doas") $([ -n "$AUDIO_PKGS" ] && echo rtkit) \
-    ttf-dejavu ttf-liberation noto-fonts \
-    $XORG_PKGS \
-    $AUDIO_PKGS \
-    $GPU
+_do_basestrap() {
+    local _k="$1"
+    basestrap /mnt \
+        base base-devel "$_k" linux-firmware $UCODE \
+        $([ "$INIT" = "dinit" ] && echo "dinit elogind-dinit dbus-dinit" || echo "openrc elogind-openrc dbus-openrc") \
+        $([ "$NET_CHOICE" = "NM" ] && { [ "$INIT" = "dinit" ] && echo "networkmanager networkmanager-dinit" || echo "networkmanager networkmanager-openrc"; }) \
+        $([ "$PRIV_ESC" = "sudo" ] && echo "sudo" || echo "doas") $([ -n "$AUDIO_PKGS" ] && echo rtkit) \
+        ttf-dejavu ttf-liberation noto-fonts \
+        $XORG_PKGS \
+        $AUDIO_PKGS \
+        $GPU
+}
+if ! _do_basestrap "$FIRST_KERNEL"; then
+    echo "==> $FIRST_KERNEL failed, falling back to linux"
+    FIRST_KERNEL="linux"
+    KERNEL_CHOICES="linux"
+    _do_basestrap linux
+fi
 
 gauge 35 "Writing fstab..."
-fstabgen -U /mnt >> /mnt/etc/fstab
-
-# Persist XLibre repo and finish input driver install
-if [ "$USE_XLIBRE" = "1" ]; then
-    grep -q '\[galaxy-gremlins\]' /mnt/etc/pacman.conf || \
-        printf '\n[galaxy-gremlins]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
-    # xlibre-input-libinput conflicts with xf86-input-libinput — install after server
-    artix-chroot /mnt pacman -Sy --noconfirm
-    artix-chroot /mnt pacman -S --noconfirm xlibre-input-libinput
+if [ "${ZFS_ROOT:-0}" = "1" ]; then
+    # ZFS root: generate fstab for non-ZFS mounts only, ZFS handles itself
+    fstabgen -U /mnt | grep -v ' / ' >> /mnt/etc/fstab
+    # install ZFS support in the target
+    artix-chroot /mnt pacman -S --noconfirm zfs-dkms zfs-utils 2>/dev/null || \
+        artix-chroot /mnt pacman -S --noconfirm zfs-linux 2>/dev/null || true
+    # enable zfs service
+    if [ "$INIT" = "dinit" ]; then
+        artix-chroot /mnt ln -sf /etc/dinit.d/zfs-import /etc/dinit.d/boot.d/ 2>/dev/null || true
+        artix-chroot /mnt ln -sf /etc/dinit.d/zfs-mount  /etc/dinit.d/boot.d/ 2>/dev/null || true
+    else
+        artix-chroot /mnt rc-update add zfs-import boot 2>/dev/null || true
+        artix-chroot /mnt rc-update add zfs-mount  boot 2>/dev/null || true
+    fi
+else
+    fstabgen -U /mnt >> /mnt/etc/fstab
 fi
 
 # Encryption setup inside installed system
@@ -658,6 +770,13 @@ fi
 # pacman tweaks
 sed -i 's/^#Color/Color\nILoveCandy/' /mnt/etc/pacman.conf
 sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 10/' /mnt/etc/pacman.conf
+# Enable multilib if requested
+if [ "$MULTILIB" = "1" ]; then
+    grep -q '\[lib32\]' /mnt/etc/pacman.conf || \
+        printf '\n[lib32]\nInclude = /etc/pacman.d/mirrorlist\n' >> /mnt/etc/pacman.conf
+    artix-chroot /mnt pacman -Sy --noconfirm
+fi
+
 # Block legacy xf86-video DDX drivers — modesetting handles everything
 # Prevents DE metapackages from pulling them in as optional deps
 grep -q 'xf86-video-amdgpu' /mnt/etc/pacman.conf || \
@@ -702,15 +821,15 @@ if [ "$NET_CHOICE" = "NM" ] && [ -d /etc/NetworkManager/system-connections ]; th
     chmod 600 /mnt/etc/NetworkManager/system-connections/* 2>/dev/null || true
 fi
 
-# Extra kernels
+# Extra kernels — skip silently if they fail
 for K in $KERNEL_CHOICES; do
     [ "$K" = "$FIRST_KERNEL" ] && continue
     if [ "$K" = "linux-cachyos" ]; then
-        artix-chroot /mnt pacman -S --noconfirm linux-cachyos
+        artix-chroot /mnt pacman -S --noconfirm linux-cachyos || echo "==> Warning: linux-cachyos failed, skipping"
     elif [ "$K" = "linux-lqx" ]; then
-        artix-chroot /mnt pacman -S --noconfirm linux-lqx linux-lqx-headers
+        artix-chroot /mnt pacman -S --noconfirm linux-lqx linux-lqx-headers || echo "==> Warning: linux-lqx failed, skipping"
     else
-        artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers"
+        artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers" || echo "==> Warning: $K failed, skipping"
     fi
 done
 
@@ -762,24 +881,33 @@ USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
 USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
 
 # privilege escalation config
+if [ "$PRIV_ESC" = "sudo" ]; then
+    _sudo_ok=0
+    if [ -f /mnt/etc/sudoers ]; then
+        sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /mnt/etc/sudoers
+        sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /mnt/etc/sudoers
+        grep -q '%wheel.*ALL' /mnt/etc/sudoers && _sudo_ok=1
+    else
+        mkdir -p /mnt/etc/sudoers.d
+        echo "%wheel ALL=(ALL:ALL) ALL" > /mnt/etc/sudoers.d/wheel
+        chmod 0440 /mnt/etc/sudoers.d/wheel
+        _sudo_ok=1
+    fi
+    if [ "$_sudo_ok" = "0" ]; then
+        echo "==> Warning: sudo config failed, falling back to doas"
+        PRIV_ESC="doas"
+    fi
+fi
+# doas — either as primary choice or fallback
 if [ "$PRIV_ESC" = "doas" ]; then
+    # ensure doas is installed (may have been skipped if sudo was chosen initially)
+    [ ! -f /mnt/usr/bin/doas ] && artix-chroot /mnt pacman -S --noconfirm doas 2>/dev/null || true
     cat > /mnt/etc/doas.conf << 'EOF'
 permit persist :wheel
 permit nopass :wheel cmd pacman
 EOF
     chmod 0400 /mnt/etc/doas.conf
-    # symlink sudo -> doas so tools that hardcode sudo still work
     [ ! -e /mnt/usr/bin/sudo ] && artix-chroot /mnt ln -s /usr/bin/doas /usr/bin/sudo || true
-else
-    # sudo — configure sudoers
-    if [ -f /mnt/etc/sudoers ]; then
-        sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /mnt/etc/sudoers
-        sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /mnt/etc/sudoers
-    else
-        mkdir -p /mnt/etc/sudoers.d
-        echo "%wheel ALL=(ALL:ALL) ALL" > /mnt/etc/sudoers.d/wheel
-        chmod 0440 /mnt/etc/sudoers.d/wheel
-    fi
 fi
 
 # xdg dirs — create standard dirs directly, avoids chroot session issues
@@ -855,42 +983,64 @@ chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 
 # bare WMs autologin on tty1 and startx
 BARE_WMS="i3 XMonad Openbox Fluxbox IceWM"
+
+# Write .desktop session files for bare WMs so DMs (lightdm, sddm) can launch them
 for _wm in $BARE_WMS; do
     if echo "$DE_CHOICES" | grep -qw "$_wm"; then
-        # startx on login if on tty1
-        cat >> /mnt/home/"$USERNAME"/.bash_profile << 'EOF'
+        mkdir -p /mnt/usr/share/xsessions
+        case "$_wm" in
+            i3)      _wm_exec="i3" ;;
+            XMonad)  _wm_exec="xmonad" ;;
+            Openbox) _wm_exec="openbox-session" ;;
+            Fluxbox) _wm_exec="startfluxbox" ;;
+            IceWM)   _wm_exec="icewm-session" ;;
+        esac
+        cat > "/mnt/usr/share/xsessions/${_wm}.desktop" << EOF
+[Desktop Entry]
+Name=$_wm
+Exec=$_wm_exec
+Type=Application
+EOF
+    fi
+done
+
+# Only set up autologin + startx if no DM is being installed
+# If a DM is present it owns the session — startx in .bash_profile would conflict
+_has_bare_wm=0
+for _wm in $BARE_WMS; do
+    echo "$DE_CHOICES" | grep -qw "$_wm" && _has_bare_wm=1 && break
+done
+
+if [ "$_has_bare_wm" = "1" ] && [ -z "$DM" ]; then
+    # pure bare WM setup — autologin on tty1 and startx
+    cat >> /mnt/home/"$USERNAME"/.bash_profile << 'EOF'
 [[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx
 EOF
-        chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.bash_profile
-        # autologin
-        if [ "$INIT" = "dinit" ]; then
-            cat > /mnt/etc/dinit.d/agetty-tty1 << EOF
+    chown "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.bash_profile
+    if [ "$INIT" = "dinit" ]; then
+        cat > /mnt/etc/dinit.d/agetty-tty1 << EOF
 type = process
 command = /sbin/agetty --autologin $USERNAME --noclear tty1 38400 linux
 restart = true
 depends-on = elogind
 EOF
-        else
-            # OpenRC: per-tty conf.d override
-            mkdir -p /mnt/etc/conf.d
-            cat > /mnt/etc/conf.d/agetty.tty1 << EOF
+    else
+        mkdir -p /mnt/etc/conf.d
+        cat > /mnt/etc/conf.d/agetty.tty1 << EOF
 agetty_options="--autologin $USERNAME --noclear"
 EOF
-            # OpenRC PAM: ensure pam_elogind registers the session
-            # and nullok lets empty-password autologin through cleanly
-            for pam_file in login system-auth; do
-                PAM_PATH="/mnt/etc/pam.d/$pam_file"
-                [ -f "$PAM_PATH" ] || continue
-                # nullok on pam_unix auth so autologin isn't rejected
-                sed -i 's/pam_unix.so$/pam_unix.so nullok/' "$PAM_PATH" 2>/dev/null || true
-                # pam_elogind session registration
-                grep -q 'pam_elogind.so' "$PAM_PATH" || \
-                    echo 'session optional pam_elogind.so' >> "$PAM_PATH"
-            done
-        fi
-        break
+        for pam_file in login system-auth; do
+            PAM_PATH="/mnt/etc/pam.d/$pam_file"
+            [ -f "$PAM_PATH" ] || continue
+            sed -i 's/pam_unix.so$/pam_unix.so nullok/' "$PAM_PATH" 2>/dev/null || true
+            grep -q 'pam_elogind.so' "$PAM_PATH" || \
+                echo 'session optional pam_elogind.so' >> "$PAM_PATH"
+        done
     fi
-done
+elif [ "$_has_bare_wm" = "1" ] && [ -n "$DM" ]; then
+    # mixed: bare WMs + a DM — DM handles login, session files written above
+    echo "==> Bare WMs registered as DM sessions — select them from $DM login screen"
+fi
 
 gauge 60 "Configuring swap..."
 # zram swap
@@ -935,10 +1085,9 @@ EOF
 fi
 
 gauge 65 "Installing desktop environment..."
-# install whatever DE/WM the user picked
-if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
-    DM="greetd"
-elif echo "$DE_CHOICES" | grep -qw "Hyprland"; then
+# DM priority: Cosmic/Hyprland need greetd, Plasma needs sddm, rest use lightdm
+# greetd > sddm > lightdm — heavier DMs override lighter ones
+if echo "$DE_CHOICES" | grep -qwE "Cosmic|Hyprland"; then
     DM="greetd"
 elif echo "$DE_CHOICES" | grep -qw "Plasma"; then
     DM="sddm"
@@ -948,7 +1097,9 @@ else
     DM=""
 fi
 
+_failed_des=""
 for DE in $DE_CHOICES; do
+    _de_ok=1
     case "$DE" in
         Plasma)
             artix-chroot /mnt pacman -S --noconfirm \
@@ -957,18 +1108,18 @@ for DE in $DE_CHOICES; do
                 breeze breeze-gtk knotifications \
                 polkit-kde-agent xdg-desktop-portal-kde \
                 dolphin konsole spectacle ark gwenview \
-                plasma-systemmonitor ksystemstats bluedevil
+                plasma-systemmonitor ksystemstats bluedevil || _de_ok=0
             ;;
         XFCE)
             artix-chroot /mnt pacman -S --noconfirm \
                 xfce4 xfce4-goodies xdg-desktop-portal-gtk \
-                pavucontrol thunar-archive-plugin
+                pavucontrol thunar-archive-plugin || _de_ok=0
             ;;
         LXQt)
-            artix-chroot /mnt pacman -S --noconfirm lxqt
+            artix-chroot /mnt pacman -S --noconfirm lxqt || _de_ok=0
             ;;
         i3)
-            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm
+            artix-chroot /mnt pacman -S --noconfirm i3-wm dmenu xterm || _de_ok=0
             ;;
         XMonad)
             artix-chroot /mnt pacman -S --noconfirm artix-archlinux-support
@@ -977,8 +1128,8 @@ for DE in $DE_CHOICES; do
                 artix-chroot /mnt pacman-key --populate archlinux
             fi
             artix-chroot /mnt pacman -Sy --noconfirm
-            artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib xterm dmenu git
-            artix-chroot /mnt bash -c "
+            artix-chroot /mnt pacman -S --noconfirm xmonad xmonad-contrib xterm dmenu git || { _de_ok=0; }
+            [ "$_de_ok" = "1" ] && artix-chroot /mnt bash -c "
                 mkdir -p /home/$USERNAME/.config
                 git clone https://github.com/feribsd/xmonad-dotfiles.git /tmp/xmonad-dotfiles
                 cp -r /tmp/xmonad-dotfiles/. /home/$USERNAME/.config/
@@ -987,33 +1138,35 @@ for DE in $DE_CHOICES; do
             "
             ;;
         Openbox)
-            artix-chroot /mnt pacman -S --noconfirm openbox xterm dmenu
+            artix-chroot /mnt pacman -S --noconfirm openbox xterm dmenu || _de_ok=0
             ;;
         Fluxbox)
-            artix-chroot /mnt pacman -S --noconfirm fluxbox xterm dmenu
+            artix-chroot /mnt pacman -S --noconfirm fluxbox xterm dmenu || _de_ok=0
             ;;
         IceWM)
-            artix-chroot /mnt pacman -S --noconfirm icewm xterm
+            artix-chroot /mnt pacman -S --noconfirm icewm xterm || _de_ok=0
             mkdir -p /mnt/home/"$USERNAME"/.config/icewm
             ;;
         Hyprland)
-            artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland
-            mkdir -p /mnt/home/"$USERNAME"/.config/hypr
-            cat >> /mnt/home/"$USERNAME"/.config/hypr/hyprland.conf << 'HYPREOF'
+            artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland || { _de_ok=0; }
+            if [ "$_de_ok" = "1" ]; then
+                mkdir -p /mnt/home/"$USERNAME"/.config/hypr
+                cat >> /mnt/home/"$USERNAME"/.config/hypr/hyprland.conf << 'HYPREOF'
 exec-once = /usr/local/bin/start-pipewire
 HYPREOF
-            chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/hypr
-            mkdir -p /mnt/usr/share/wayland-sessions
-            cat > /mnt/usr/share/wayland-sessions/hyprland.desktop << 'EOF'
+                chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/hypr
+                mkdir -p /mnt/usr/share/wayland-sessions
+                cat > /mnt/usr/share/wayland-sessions/hyprland.desktop << 'EOF'
 [Desktop Entry]
 Name=Hyprland
 Comment=A dynamic tiling Wayland compositor
 Exec=Hyprland
 Type=Application
 EOF
+            fi
             ;;
         Moksha)
-            artix-chroot /mnt pacman -S --noconfirm moksha-artix
+            artix-chroot /mnt pacman -S --noconfirm moksha-artix || _de_ok=0
             ;;
         Cosmic)
             artix-chroot /mnt bash -c "
@@ -1025,7 +1178,7 @@ EOF
                 $([ "$INIT" = "dinit" ] && echo "greetd greetd-dinit" || echo "greetd greetd-openrc") \
                 xdg-desktop-portal-cosmic cosmic-terminal \
                 cosmic-files cosmic-text-editor cosmic-settings \
-                cosmic-screenshot cosmic-store upower pavucontrol
+                cosmic-screenshot cosmic-store upower pavucontrol || _de_ok=0
             # Create cosmic-greeter system user if missing
             artix-chroot /mnt id cosmic-greeter >/dev/null 2>&1 || \
                 artix-chroot /mnt useradd -r -M -G video,audio,input cosmic-greeter
@@ -1058,7 +1211,10 @@ user = "cosmic-greeter"
 EOF
             ;;
     esac
+    [ "$_de_ok" = "0" ] && _failed_des="$_failed_des $DE"
 done
+
+[ -n "$_failed_des" ] && echo "==> Warning: failed to install:$_failed_des — install manually after boot"
 
 # write .xinitrc for bare WMs — done after loop so all WMs are installed
 BARE_WMS_SELECTED=""
@@ -1090,18 +1246,16 @@ XINITRC_HEADER
         if [ "$WM_COUNT" -eq 1 ]; then
             wm_exec "$BARE_WMS_SELECTED"
         else
-            echo "echo 'Select window manager:'"
-            IDX=1
+            # generate a whiptail picker that runs at login
+            printf 'WMLIST=('
+            for _wm in $BARE_WMS_SELECTED; do printf '"%s" "" ' "$_wm"; done
+            printf ')\n'
+            cat << 'WMPICKER'
+_wm_choice=$(whiptail --title "Window Manager" --menu "Select WM to launch:" 15 50 8 "${WMLIST[@]}" 3>&1 1>&2 2>&3)
+[ -z "$_wm_choice" ] && _wm_choice="${WMLIST[0]}"
+WMPICKER
             for _wm in $BARE_WMS_SELECTED; do
-                echo "echo '  $IDX) $_wm'"
-                IDX=$(( IDX + 1 ))
-            done
-            echo "printf 'Choice: '"
-            echo "read -r _choice"
-            IDX=1
-            for _wm in $BARE_WMS_SELECTED; do
-                echo "[ "\$_choice" = "$IDX" ] && $(wm_exec $_wm)"
-                IDX=$(( IDX + 1 ))
+                echo "[ \"\$_wm_choice\" = \"$_wm\" ] && $(wm_exec $_wm)"
             done
             wm_exec "$(echo "$BARE_WMS_SELECTED" | awk '{print $1}')"
         fi
@@ -1112,10 +1266,20 @@ fi
 
 if [ -n "$DM" ]; then
     if [[ "$DM" == "greetd" ]]; then
-        if ! echo "$DE_CHOICES" | grep -qw "Cosmic"; then
-            # greetd for Hyprland
-            artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "greetd greetd-dinit" || echo "greetd greetd-openrc")
-            mkdir -p /mnt/etc/greetd
+        artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "greetd greetd-dinit" || echo "greetd greetd-openrc")
+        mkdir -p /mnt/etc/greetd
+        if echo "$DE_CHOICES" | grep -qw "Cosmic"; then
+            # Cosmic owns greetd — its own greeter handles session selection
+            cat > /mnt/etc/greetd/config.toml << 'EOF'
+[terminal]
+vt = 1
+
+[default_session]
+command = "cosmic-comp cosmic-greeter"
+user = "cosmic-greeter"
+EOF
+        else
+            # Hyprland only (or Hyprland + bare WMs — land in Hyprland by default)
             cat > /mnt/etc/greetd/config.toml << EOF
 [terminal]
 vt = 1
@@ -1125,11 +1289,12 @@ command = "Hyprland"
 user = "$USERNAME"
 EOF
         fi
-        : # COSMIC installs its own greetd in the Cosmic case block
     elif [[ "$DM" == "sddm" ]]; then
         artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "sddm sddm-dinit" || echo "sddm sddm-openrc")
+        # sddm picks up all installed .desktop session files automatically
     elif [[ "$DM" == "lightdm" ]]; then
         artix-chroot /mnt pacman -S --noconfirm $([ "$INIT" = "dinit" ] && echo "lightdm lightdm-dinit lightdm-gtk-greeter" || echo "lightdm lightdm-openrc lightdm-gtk-greeter")
+        # lightdm picks up all installed .desktop session files automatically
     fi
 fi
 
@@ -1256,14 +1421,22 @@ case "$BOOT" in
         ;;
     limine)
         artix-chroot /mnt pacman -S --noconfirm limine efibootmgr
-        artix-chroot /mnt bash -c "
-            mkdir -p /boot/EFI/limine
-            cp /usr/share/limine/BOOTX64.EFI /boot/EFI/limine/
-            efibootmgr --create \
-                --disk $DISK --part 1 \
-                --label 'Limine' \
-                --loader '\\EFI\\limine\\BOOTX64.EFI'
-        "
+
+        # Get the EFI partition number from its device path
+        EFI_PART_NUM=$(echo "$EFI" | grep -o '[0-9]*$')
+
+        # Install Limine EFI binary
+        mkdir -p /mnt/boot/EFI/limine
+        # Limine ships the EFI binary at this path
+        cp /mnt/usr/share/limine/BOOTX64.EFI /mnt/boot/EFI/limine/ 2>/dev/null || \
+        cp /mnt/usr/share/limine/limine-uefi.efi /mnt/boot/EFI/limine/BOOTX64.EFI 2>/dev/null || true
+
+        efibootmgr --create \
+            --disk "$DISK" \
+            --part "$EFI_PART_NUM" \
+            --label "Limine" \
+            --loader '\EFI\limine\BOOTX64.EFI'
+
         if [ "$ENCRYPT" = "1" ]; then
             PART_UUID=$(blkid -s UUID -o value "$REAL_ROOT")
             LIMINE_CMDLINE="cryptdevice=UUID=$PART_UUID:cryptroot root=/dev/mapper/cryptroot rw quiet"
@@ -1271,14 +1444,17 @@ case "$BOOT" in
             ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
             LIMINE_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
         fi
+
+        # Limine v5+ config format
         cat > /mnt/boot/limine.conf << EOF
-timeout: 5
+TIMEOUT=5
+VERBOSE=no
 
 /Artix Linux
-    protocol: linux
-    path: boot():/vmlinuz-$FIRST_KERNEL
-    cmdline: $LIMINE_CMDLINE
-    module_path: boot():/initramfs-$FIRST_KERNEL.img
+    PROTOCOL=linux
+    KERNEL_PATH=boot():/vmlinuz-$FIRST_KERNEL
+    CMDLINE=$LIMINE_CMDLINE
+    MODULE_PATH=boot():/initramfs-$FIRST_KERNEL.img
 EOF
         ;;
     refind)

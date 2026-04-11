@@ -1,6 +1,6 @@
 # artix-install
 
-A simple TUI installer for Artix Linux with dinit or openrc that gives you a minimal,
+A simple TUI installer for Artix Linux with dinit or openrc(runit and s6 are avalible in testing) that gives you a minimal,
 (mostly) bloat-free system without sacrificing convenience.
 
 ## Why would I choose this over the official installer?
@@ -16,8 +16,9 @@ A simple TUI installer for Artix Linux with dinit or openrc that gives you a min
 - Keyboard layout, locale, timezone
 - Audio via PipeWire for desktop environments(note: KDE Plasma audio can be finicky)
 - doas or sudo
+- also it lets you choose between xlibre and xorg
 - WiFi (carries your live session connection into the install)
-- Optional DE/WM(note that I ship with the base verison of these but iam considering shipping riced versions of these): Cosmic(perfomance issues), KDE Plasma, XFCE, LXQt, Hyprland, Moksha ///the following wms dont configure audio to reduce bloat: i3, XMonad, ,Icewm, Fluxbox or CLI-only
+- Optional DE/WM(note that I ship with the base verison of these but iam considering shipping riced versions of these): Cosmic(perfomance issues), KDE Plasma, XFCE, LXQt, Hyprland, Moksha ///the following wms dont configure audio: i3, XMonad, ,Icewm, Fluxbox or CLI-only
 
 ## Usage
 Boot the Artix live ISO(please use the weekly release the stable one is broken), connect to wifi via nmtui, then run the following command as root
@@ -26,7 +27,8 @@ Boot the Artix live ISO(please use the weekly release the stable one is broken),
 curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install.sh | bash
 ```
 
-if you want the testing branch run this command instead
+or if you want the testing branch run this command instead(note that it can just break)
+
 ```
 curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-install-testing.sh | bash
 ```
@@ -39,7 +41,7 @@ Then just go through the installer it is fairly simple and sit back and relax.
 
 
 ## Things to add
-- [ ] s6 and runit
+- [ * ] s6 and runit(now avalible in the testing release but I suggest you wait for now since well its testing
 - [ ] add MORE wms
 - [ ] add my own custom kernel
 - [ ] add a option to prerice your wm

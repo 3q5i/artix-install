@@ -648,20 +648,39 @@ svc_pkg() {
 }
 
 # svc_enable <svc> — enable service in installed system
+# NOTE: for runit/s6/dinit, /run is a tmpfs not yet mounted in chroot,
+# so we link into persistent dirs (runsvdir/default or adminsv/default/contents.d)
 svc_enable() {
     local _s="$1"
     case "$INIT" in
         dinit)
-            [ -f "/mnt/etc/dinit.d/$_s" ] &&                 artix-chroot /mnt ln -sf "/etc/dinit.d/$_s" /etc/dinit.d/boot.d/ ||                 echo "Warning: dinit service $_s not found"
+            if [ -f "/mnt/etc/dinit.d/$_s" ]; then
+                artix-chroot /mnt ln -sf "/etc/dinit.d/$_s" /etc/dinit.d/boot.d/
+            else
+                echo "Warning: dinit service $_s not found"
+            fi
             ;;
         openrc)
-            artix-chroot /mnt rc-update add "$_s" default 2>/dev/null ||                 echo "Warning: openrc service $_s not found"
+            artix-chroot /mnt rc-update add "$_s" default 2>/dev/null || \
+                echo "Warning: openrc service $_s not found"
             ;;
         runit)
-            [ -d "/mnt/etc/runit/sv/$_s" ] &&                 artix-chroot /mnt ln -sf "/etc/runit/sv/$_s" /etc/runit/runsvdir/default/ ||                 echo "Warning: runit service $_s not found"
+            # Link into runsvdir/default — NOT /run/runit/service (tmpfs, not mounted in chroot)
+            if [ -d "/mnt/etc/runit/sv/$_s" ]; then
+                mkdir -p /mnt/etc/runit/runsvdir/default
+                artix-chroot /mnt ln -sf "/etc/runit/sv/$_s" /etc/runit/runsvdir/default/
+            else
+                echo "Warning: runit service $_s not found in /etc/runit/sv/"
+            fi
             ;;
         s6)
-            [ -d "/mnt/etc/s6/adminscan/$_s" ] ||                 echo "Note: s6 service $_s — will be picked up on boot"
+            # Add to default bundle contents.d; s6-db-reload compiles at end
+            if [ -d "/mnt/etc/s6/sv/${_s}-srv" ] || [ -d "/mnt/etc/s6/adminsv/$_s" ]; then
+                mkdir -p /mnt/etc/s6/adminsv/default/contents.d
+                touch "/mnt/etc/s6/adminsv/default/contents.d/$_s"
+            else
+                echo "Note: s6 service $_s not found in sv/adminsv (may be in base bundle)"
+            fi
             ;;
     esac
 }
@@ -1092,10 +1111,14 @@ EOF
             artix-chroot /mnt ln -sf /etc/runit/sv/agetty-tty1 /etc/runit/runsvdir/default/ 2>/dev/null || true
             ;;
         s6)
-            mkdir -p "/mnt/etc/s6/adminscan/agetty-tty1"
+            # s6: create a custom longrun service for autologin getty
+            mkdir -p /mnt/etc/s6/adminsv/agetty-tty1
+            printf 'longrun\n' > /mnt/etc/s6/adminsv/agetty-tty1/type
             printf '#!/bin/execlineb -P\nagetty --autologin %s --noclear tty1 linux\n' "$USERNAME" \
-                > "/mnt/etc/s6/adminscan/agetty-tty1/run"
-            chmod +x "/mnt/etc/s6/adminscan/agetty-tty1/run"
+                > /mnt/etc/s6/adminsv/agetty-tty1/run
+            chmod +x /mnt/etc/s6/adminsv/agetty-tty1/run
+            mkdir -p /mnt/etc/s6/adminsv/default/contents.d
+            touch /mnt/etc/s6/adminsv/default/contents.d/agetty-tty1
             ;;
     esac
 elif [ "$_has_bare_wm" = "1" ] && [ -n "$DM" ]; then
@@ -1151,9 +1174,10 @@ EOF
             chmod +x /mnt/etc/runit/sv/zram/run /mnt/etc/runit/sv/zram/finish
             ;;
         s6)
-            mkdir -p /mnt/etc/s6/adminscan/zram
-            printf '#!/bin/execlineb -P\n/usr/local/bin/zram-setup\n' > /mnt/etc/s6/adminscan/zram/run
-            chmod +x /mnt/etc/s6/adminscan/zram/run
+            mkdir -p /mnt/etc/s6/adminsv/zram
+            printf 'longrun\n' > /mnt/etc/s6/adminsv/zram/type
+            printf '#!/bin/execlineb -P\n/usr/local/bin/zram-setup\n' > /mnt/etc/s6/adminsv/zram/run
+            chmod +x /mnt/etc/s6/adminsv/zram/run
             ;;
     esac
 fi
@@ -1443,10 +1467,11 @@ case "$INIT" in
         [[ "$SWAP" =~ Zram|Both ]] && svc_enable zram || true
         ;;
     s6)
-        [ -d /mnt/etc/s6/adminscan/rtkit ] && SVCS="$SVCS rtkit"
+        [ -d /mnt/etc/s6/sv/rtkit-srv ] && SVCS="$SVCS rtkit"
         for svc in $SVCS; do svc_enable "$svc"; done
         [[ "$SWAP" =~ Zram|Both ]] && svc_enable zram || true
-        artix-chroot /mnt s6-rc-db-update 2>/dev/null || true
+        # Compile the s6-rc database so services are active on next boot
+        artix-chroot /mnt s6-db-reload 2>/dev/null ||             artix-chroot /mnt s6-rc-db-update 2>/dev/null || true
         ;;
 esac
 

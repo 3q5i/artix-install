@@ -400,12 +400,12 @@ fi  # end TEST_MODE=0 Q&A
 
 # partition manager
 if [ "$TEST_MODE" = "0" ]; then
-declare -A PART_FS
-EXTRA_MOUNTS=()
 DISK_SIZE=$(lsblk -bdno SIZE "$DISK" 2>/dev/null || echo 0)
 DISK_SIZE_GB=$(( DISK_SIZE / 1024 / 1024 / 1024 ))
 EFI=""; ROOT=""; DUALBOOT=0
 [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
+declare -A PART_FS
+EXTRA_MOUNTS=()
 
 PART_MODE=$(whiptail --title "$TITLE" --menu \
     "Partitioning — $DISK (${DISK_SIZE_GB}GB)" 13 65 3 \
@@ -532,8 +532,10 @@ if [ "$DUALBOOT" = "0" ] && [ "${PART_MODE:-auto}" != "manual" ]; then
             fi
         done
     } | sfdisk "$DISK"
-    udevadm settle
-    [ "$UEFI" = "1" ] && mkfs.fat -F32 "$EFI"
+    # Give kernel time to re-read partition table — NVMe needs this
+    partprobe "$DISK" 2>/dev/null || true
+    udevadm settle --timeout=10
+    sleep 1
     # Format swap partition now — activate after mount so fstabgen sees it
     SWAP_PART=""
     for i in "${!PART_TYPES[@]}"; do

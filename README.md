@@ -1,13 +1,13 @@
 # Artix-install
 
-A TUI installer for Artix Linux with dinit or openrc(runit and s6 are avalible in testing) that gives you a minimal and bloat-free system without sacrificing convenience.
+A TUI installer for Artix Linux with dinit, openrc, runit and s6 that aims to give you a minimal and bloat-free system without sacrificing convenience.
 
 ## Why would I choose this over the official installer?
 
 -It gives you the customization of the manual install while making it easy
 
 ## What it configures
-- Disk partitioning and filesystem (ext4, btrfs, xfs, f2fs and more in testing)
+- Disk partitioning and filesystem (ext4, btrfs, xfs, f2fs and more)
 - Kernel ( zen, lts, standard and custom kernels like cachyos and liquorix kernel)
 - Bootloader (GRUB, Limine, rEFInd)
 - Swap (zram, swapfile, both or neither)
@@ -16,7 +16,7 @@ A TUI installer for Artix Linux with dinit or openrc(runit and s6 are avalible i
 - Audio via PipeWire for desktop environments
 - doas or sudo
 - also it lets you choose between xlibre and xorg
-- WiFi (carries your live session connection into the install)
+- WiFi (carries your live session connection into the install if youre going to use network manager)
 - Repos ( as in it lets you enable 32 bit support and add the cachyos repos with their kernel)
 - DE/WM(you can also pick cli dont worry): Cosmic(perfomance issues), KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad,Icewm and Fluxbox 
 

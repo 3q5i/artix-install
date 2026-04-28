@@ -29,20 +29,22 @@ fi
 clear
 TITLE="Artix Master Installer"
 
+declare -A PART_FS
+EXTRA_MOUNTS=()
+
 # =========================
 # TEST / FAST MODE
 # =========================
 # Pass --test as first arg to skip all prompts and do a fast CLI install
 # Uses: first disk found, ext4, no swap, no encrypt, dinit, NM, linux kernel,
 #       AMD cpu/gpu, GRUB, no DE, hostname=artix, user=user, pw=idk
-#       AUR=yay, extra=alacritty feh picom rofi
 TEST_MODE=0
 if [ "${1:-}" = "--test" ]; then
     TEST_MODE=1
     DISK=$(lsblk -dpno NAME | grep -v loop | head -1)
     FS="ext4"
     SWAP="None"
-    ENCRYPT=0; REAL_ROOT=""; LUKS_CMDLINE=""
+    ENCRYPT=0; REAL_ROOT=""; LUKS_CMDLINE=""; LUKS_PW=""
     INIT="dinit"
     LOCALE="en_US.UTF-8"
     TIMEZONE="Europe/London"
@@ -74,10 +76,13 @@ if [ "${1:-}" = "--test" ]; then
         EFI=""; ROOT="${DISK}${P}1"
     fi
     DUALBOOT=0; SWAP_PART=""
-    declare -A PART_FS
     EXTRA_MOUNTS=()
     ZFS_ROOT=0
-    echo "==> TEST MODE: disk=$DISK boot=$BOOT uefi=$UEFI" --title "$TITLE" --msgbox "WARNING: This will erase the selected disk.\nMake sure you have backups.\n\nPress Enter to begin." 10 55
+    echo "==> TEST MODE: disk=$DISK boot=$BOOT uefi=$UEFI"
+fi
+
+if [ "$TEST_MODE" = "0" ]; then
+    whiptail --title "$TITLE" --msgbox "WARNING: This will erase the selected disk.\nMake sure you have backups.\n\nPress Enter to begin." 10 55
 fi
 
 # =========================
@@ -184,14 +189,15 @@ case "$STEP" in
     FS="$_v"; STEP=$(( STEP + 1 )) ;;
 
 4) # Swap
-    _v=$(whiptail --title "$TITLE" --menu "Swap  [4/$STEP_MAX]" 12 60 4 \
-        "Zram"     "zram (compressed RAM swap)" \
-        "Swapfile" "Swapfile on disk" \
-        "Both"     "Zram + Swapfile" \
-        "None"     "No swap" \
+    _v=$(whiptail --title "$TITLE" --menu "Swap  [4/$STEP_MAX]" 14 65 5 \
+        "Zram"      "zram — compressed RAM swap (recommended)" \
+        "Swapfile"  "Swapfile on root partition" \
+        "Both"      "Zram + Swapfile" \
+        "Partition" "Dedicated swap partition (auto layout only)" \
+        "None"      "No swap" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     SWAP="$_v"
-    if [[ "$SWAP" =~ Swapfile|Both ]]; then
+    if [[ "$SWAP" =~ Swapfile|Both|Partition ]]; then
         SWAP_MENU_ARGS=()
         for SZ in 1 2 4 8 16; do
             (( SZ == RAM_HALF_GB )) \
@@ -349,8 +355,8 @@ case "$STEP" in
     case "$GPU_CHOICE" in
         intel)  GPU="mesa vulkan-intel" ;;
         amd)    GPU="mesa vulkan-radeon" ;;
-        nvidia) GPU="mesa nvidia nvidia-utils" ;;
-        hybrid) GPU="mesa vulkan-intel nvidia nvidia-utils" ;;
+        nvidia) GPU="mesa nvidia-dkms nvidia-utils" ;;
+        hybrid) GPU="mesa vulkan-intel nvidia-dkms nvidia-utils" ;;
         vm)     GPU="mesa" ;;
     esac
     STEP=$(( STEP + 1 )) ;;
@@ -396,8 +402,6 @@ fi  # end TEST_MODE=0 Q&A
 
 # partition manager
 if [ "$TEST_MODE" = "0" ]; then
-declare -A PART_FS
-EXTRA_MOUNTS=()
 DISK_SIZE=$(lsblk -bdno SIZE "$DISK" 2>/dev/null || echo 0)
 DISK_SIZE_GB=$(( DISK_SIZE / 1024 / 1024 / 1024 ))
 EFI=""; ROOT=""; DUALBOOT=0
@@ -413,15 +417,29 @@ PART_MODE=$(whiptail --title "$TITLE" --menu \
 case "$PART_MODE" in
     auto)
         if [ "$UEFI" = "1" ]; then
-            PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
-            PART_SIZES=( "1" "0" )
-            PART_TYPES=( "EFI" "root" )
-            EFI="${DISK}${P}1"; ROOT="${DISK}${P}2"
+            if [ "$SWAP" = "Partition" ]; then
+                PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" "${DISK}${P}3" )
+                PART_SIZES=( "1" "$SWAP_SIZE_GB" "0" )
+                PART_TYPES=( "EFI" "swap" "root" )
+                EFI="${DISK}${P}1"; ROOT="${DISK}${P}3"
+            else
+                PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
+                PART_SIZES=( "1" "0" )
+                PART_TYPES=( "EFI" "root" )
+                EFI="${DISK}${P}1"; ROOT="${DISK}${P}2"
+            fi
         else
-            PART_DEVS=( "${DISK}${P}1" )
-            PART_SIZES=( "0" )
-            PART_TYPES=( "root" )
-            ROOT="${DISK}${P}1"
+            if [ "$SWAP" = "Partition" ]; then
+                PART_DEVS=( "${DISK}${P}1" "${DISK}${P}2" )
+                PART_SIZES=( "$SWAP_SIZE_GB" "0" )
+                PART_TYPES=( "swap" "root" )
+                ROOT="${DISK}${P}2"
+            else
+                PART_DEVS=( "${DISK}${P}1" )
+                PART_SIZES=( "0" )
+                PART_TYPES=( "root" )
+                ROOT="${DISK}${P}1"
+            fi
         fi
         ;;
     manual)
@@ -436,13 +454,13 @@ case "$PART_MODE" in
             EFI=$(whiptail --title "$TITLE" --menu "Select EFI partition" \
                 16 62 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
             _efi_fs=$(pick_fs "Filesystem for EFI partition" "vfat") || _efi_fs="vfat"
-            PART_FS["$EFI"]="$_efi_fs"
+            PART_FS["$(fs_key "$EFI")"]="$_efi_fs"
         fi
         ROOT=$(whiptail --title "$TITLE" --menu "Select root partition" \
             16 62 8 "${_parts[@]}" 3>&1 1>&2 2>&3) || exit 1
         _root_fs=$(pick_fs "Filesystem for root partition" "$FS") || _root_fs="$FS"
         FS="$_root_fs"
-        PART_FS["$ROOT"]="$_root_fs"
+        PART_FS["$(fs_key "$ROOT")"]="$_root_fs"
         # offer extra partitions (home, data, etc.)
         while true; do
             _remain_args=("skip" "Done — no more partitions")
@@ -458,7 +476,7 @@ case "$PART_MODE" in
             _extra_mp=$(whiptail --title "$TITLE" --inputbox \
                 "Mount point for $_extra" 10 55 "/home" 3>&1 1>&2 2>&3) || break
             _extra_fs=$(pick_fs "Filesystem for $_extra ($_extra_mp)") || _extra_fs="ext4"
-            PART_FS["$_extra"]="$_extra_fs"
+            PART_FS["$(fs_key "$_extra")"]="$_extra_fs"
             EXTRA_MOUNTS+=("$_extra:$_extra_mp")
         done
         PART_DEVS=(); PART_SIZES=(); PART_TYPES=()
@@ -514,8 +532,10 @@ if [ "$DUALBOOT" = "0" ] && [ "${PART_MODE:-auto}" != "manual" ]; then
             fi
         done
     } | sfdisk "$DISK"
-    udevadm settle
-    [ "$UEFI" = "1" ] && mkfs.fat -F32 "$EFI"
+    # Give kernel time to re-read partition table — NVMe needs this
+    partprobe "$DISK" 2>/dev/null || true
+    udevadm settle --timeout=10
+    sleep 1
     # Format swap partition now — activate after mount so fstabgen sees it
     SWAP_PART=""
     for i in "${!PART_TYPES[@]}"; do
@@ -536,8 +556,11 @@ if [ "$ENCRYPT" = "1" ]; then
     echo -n "$LUKS_PW" | cryptsetup open "$ROOT" cryptroot -
     REAL_ROOT="$ROOT"
     ROOT="/dev/mapper/cryptroot"
-    PART_FS["$ROOT"]="${PART_FS[$REAL_ROOT]:-$FS}"
+    PART_FS["$(fs_key "$ROOT")"]="${PART_FS[$(fs_key "$REAL_ROOT")]:-$FS}"
 fi
+
+# fs_key: sanitize a device path to use as assoc array key (/dev/sda1 -> dev_sda1)
+fs_key() { echo "${1//\//_}" | sed 's/^_//'; }
 
 # format_part <device> <fstype>
 format_part() {
@@ -579,12 +602,12 @@ format_part() {
 
 # Format EFI (always vfat unless user picked something exotic)
 [ "$UEFI" = "1" ] && [ -n "$EFI" ] && {
-    _efi_fs="${PART_FS[$EFI]:-vfat}"
+    _efi_fs="${PART_FS[$(fs_key "$EFI")]:-vfat}"
     format_part "$EFI" "$_efi_fs"
 }
 
 # Format root
-_root_fs="${PART_FS[$ROOT]:-$FS}"
+_root_fs="${PART_FS[$(fs_key "$ROOT")]:-$FS}"
 if [ "$_root_fs" = "zfs" ]; then
     format_part "$ROOT" "zfs"
     # ZFS import already mounted /mnt — skip normal mount below
@@ -599,10 +622,11 @@ mkdir -p /mnt/boot
 [ "$UEFI" = "1" ] && mount "$EFI" /mnt/boot
 
 # Mount extra partitions (from manual mode)
-for _em in "${EXTRA_MOUNTS[@]:-}"; do
+for _em in "${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}"; do
+    [ -z "$_em" ] && continue
     _em_dev="${_em%%:*}"
     _em_mp="${_em##*:}"
-    _em_fs="${PART_FS[$_em_dev]:-ext4}"
+    _em_fs="${PART_FS[$(fs_key "$_em_dev")]:-ext4}"
     [ "$_em_fs" != "zfs" ] && format_part "$_em_dev" "$_em_fs"
     mkdir -p "/mnt${_em_mp}"
     [ "$_em_fs" != "zfs" ] && mount "$_em_dev" "/mnt${_em_mp}"
@@ -629,20 +653,39 @@ svc_pkg() {
 }
 
 # svc_enable <svc> — enable service in installed system
+# NOTE: for runit/s6/dinit, /run is a tmpfs not yet mounted in chroot,
+# so we link into persistent dirs (runsvdir/default or adminsv/default/contents.d)
 svc_enable() {
     local _s="$1"
     case "$INIT" in
         dinit)
-            [ -f "/mnt/etc/dinit.d/$_s" ] &&                 artix-chroot /mnt ln -sf "/etc/dinit.d/$_s" /etc/dinit.d/boot.d/ ||                 echo "Warning: dinit service $_s not found"
+            if [ -f "/mnt/etc/dinit.d/$_s" ]; then
+                artix-chroot /mnt ln -sf "/etc/dinit.d/$_s" /etc/dinit.d/boot.d/
+            else
+                echo "Warning: dinit service $_s not found"
+            fi
             ;;
         openrc)
-            artix-chroot /mnt rc-update add "$_s" default 2>/dev/null ||                 echo "Warning: openrc service $_s not found"
+            artix-chroot /mnt rc-update add "$_s" default 2>/dev/null || \
+                echo "Warning: openrc service $_s not found"
             ;;
         runit)
-            [ -d "/mnt/etc/runit/sv/$_s" ] &&                 artix-chroot /mnt ln -sf "/etc/runit/sv/$_s" /etc/runit/runsvdir/default/ ||                 echo "Warning: runit service $_s not found"
+            # Link into runsvdir/default — NOT /run/runit/service (tmpfs, not mounted in chroot)
+            if [ -d "/mnt/etc/runit/sv/$_s" ]; then
+                mkdir -p /mnt/etc/runit/runsvdir/default
+                artix-chroot /mnt ln -sf "/etc/runit/sv/$_s" /etc/runit/runsvdir/default/
+            else
+                echo "Warning: runit service $_s not found in /etc/runit/sv/"
+            fi
             ;;
         s6)
-            [ -d "/mnt/etc/s6/adminscan/$_s" ] ||                 echo "Note: s6 service $_s — will be picked up on boot"
+            # Add to default bundle contents.d; s6-db-reload compiles at end
+            if [ -d "/mnt/etc/s6/sv/${_s}-srv" ] || [ -d "/mnt/etc/s6/adminsv/$_s" ]; then
+                mkdir -p /mnt/etc/s6/adminsv/default/contents.d
+                touch "/mnt/etc/s6/adminsv/default/contents.d/$_s"
+            else
+                echo "Note: s6 service $_s not found in sv/adminsv (may be in base bundle)"
+            fi
             ;;
     esac
 }
@@ -672,7 +715,7 @@ done
 # XLibre is now in the main Artix [world] repo — no extra repo needed
 XORG_PKGS=""
 if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
-    XORG_PKGS="xlibre-xserver xlibre-xserver-common xlibre-xf86-input-libinput xorg-xinit"
+    XORG_PKGS="xlibre-xserver xlibre-xserver-common xlibre-input-libinput xorg-xinit"
 fi
 
 # Only install audio stack for DEs that actually use it
@@ -1073,10 +1116,14 @@ EOF
             artix-chroot /mnt ln -sf /etc/runit/sv/agetty-tty1 /etc/runit/runsvdir/default/ 2>/dev/null || true
             ;;
         s6)
-            mkdir -p "/mnt/etc/s6/adminscan/agetty-tty1"
+            # s6: create a custom longrun service for autologin getty
+            mkdir -p /mnt/etc/s6/adminsv/agetty-tty1
+            printf 'longrun\n' > /mnt/etc/s6/adminsv/agetty-tty1/type
             printf '#!/bin/execlineb -P\nagetty --autologin %s --noclear tty1 linux\n' "$USERNAME" \
-                > "/mnt/etc/s6/adminscan/agetty-tty1/run"
-            chmod +x "/mnt/etc/s6/adminscan/agetty-tty1/run"
+                > /mnt/etc/s6/adminsv/agetty-tty1/run
+            chmod +x /mnt/etc/s6/adminsv/agetty-tty1/run
+            mkdir -p /mnt/etc/s6/adminsv/default/contents.d
+            touch /mnt/etc/s6/adminsv/default/contents.d/agetty-tty1
             ;;
     esac
 elif [ "$_has_bare_wm" = "1" ] && [ -n "$DM" ]; then
@@ -1132,9 +1179,10 @@ EOF
             chmod +x /mnt/etc/runit/sv/zram/run /mnt/etc/runit/sv/zram/finish
             ;;
         s6)
-            mkdir -p /mnt/etc/s6/adminscan/zram
-            printf '#!/bin/execlineb -P\n/usr/local/bin/zram-setup\n' > /mnt/etc/s6/adminscan/zram/run
-            chmod +x /mnt/etc/s6/adminscan/zram/run
+            mkdir -p /mnt/etc/s6/adminsv/zram
+            printf 'longrun\n' > /mnt/etc/s6/adminsv/zram/type
+            printf '#!/bin/execlineb -P\n/usr/local/bin/zram-setup\n' > /mnt/etc/s6/adminsv/zram/run
+            chmod +x /mnt/etc/s6/adminsv/zram/run
             ;;
     esac
 fi
@@ -1424,10 +1472,11 @@ case "$INIT" in
         [[ "$SWAP" =~ Zram|Both ]] && svc_enable zram || true
         ;;
     s6)
-        [ -d /mnt/etc/s6/adminscan/rtkit ] && SVCS="$SVCS rtkit"
+        [ -d /mnt/etc/s6/sv/rtkit-srv ] && SVCS="$SVCS rtkit"
         for svc in $SVCS; do svc_enable "$svc"; done
         [[ "$SWAP" =~ Zram|Both ]] && svc_enable zram || true
-        artix-chroot /mnt s6-rc-db-update 2>/dev/null || true
+        # Compile the s6-rc database so services are active on next boot
+        artix-chroot /mnt s6-db-reload 2>/dev/null ||             artix-chroot /mnt s6-rc-db-update 2>/dev/null || true
         ;;
 esac
 
@@ -1456,6 +1505,21 @@ case "$BOOT" in
                 --efi-directory=/boot \
                 --bootloader-id=Artix \
                 --recheck
+
+            # Also install to the fallback path /EFI/BOOT/BOOTX64.EFI
+            # Many boards (especially cheaper/older ones) ignore NVRAM entries
+            # and only boot from this hardcoded fallback location
+            mkdir -p /mnt/boot/EFI/BOOT
+            cp /mnt/boot/EFI/Artix/grubx64.efi /mnt/boot/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
+
+            # Register an explicit NVRAM boot entry — grub-install does this but
+            # some firmware clears it on reboot; efibootmgr makes it stick
+            EFI_PART_NUM=$(echo "$EFI" | grep -o '[0-9]*$')
+            efibootmgr --create \
+                --disk "$DISK" \
+                --part "$EFI_PART_NUM" \
+                --label "Artix Linux" \
+                --loader '\EFI\Artix\grubx64.efi' 2>/dev/null || true
         else
             artix-chroot /mnt grub-install --target=i386-pc --recheck "$DISK"
         fi
@@ -1484,7 +1548,11 @@ case "$BOOT" in
             --disk "$DISK" \
             --part "$EFI_PART_NUM" \
             --label "Limine" \
-            --loader '\EFI\limine\BOOTX64.EFI'
+            --loader '\EFI\limine\BOOTX64.EFI' 2>/dev/null || true
+
+        # Fallback path — boards that ignore NVRAM entries boot from here
+        mkdir -p /mnt/boot/EFI/BOOT
+        cp /mnt/boot/EFI/limine/BOOTX64.EFI /mnt/boot/EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
 
         if [ "$ENCRYPT" = "1" ]; then
             PART_UUID=$(blkid -s UUID -o value "$REAL_ROOT")
@@ -1494,22 +1562,30 @@ case "$BOOT" in
             LIMINE_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
         fi
 
-        # Limine v5+ config format
+        # Limine config — key names from official CONFIG.md
+        # protocol, path, cmdline, module_path (NOT kernel_path/kernel_cmdline)
         cat > /mnt/boot/limine.conf << EOF
-TIMEOUT=5
-VERBOSE=no
+timeout: 5
+verbose: no
 
 /Artix Linux
-    PROTOCOL=linux
-    KERNEL_PATH=boot():/vmlinuz-$FIRST_KERNEL
-    CMDLINE=$LIMINE_CMDLINE
-    MODULE_PATH=boot():/initramfs-$FIRST_KERNEL.img
+    protocol: linux
+    path: boot():/vmlinuz-$FIRST_KERNEL
+    cmdline: $LIMINE_CMDLINE
+    module_path: boot():/initramfs-$FIRST_KERNEL.img
 EOF
         ;;
     refind)
         artix-chroot /mnt pacman -S --noconfirm refind efibootmgr
         artix-chroot /mnt refind-install
-        ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
+        # Explicit NVRAM entry — refind-install does this but reinforcing helps on picky firmware
+        EFI_PART_NUM=$(echo "$EFI" | grep -o '[0-9]*$')
+        efibootmgr --create \
+            --disk "$DISK" \
+            --part "$EFI_PART_NUM" \
+            --label "rEFInd" \
+            --loader '\\EFI\\refind\\refind_x64.efi' 2>/dev/null || true
+        ROOT_UUID=$(blkid -s UUID -o value "${REAL_ROOT:-$ROOT}")
         if [ "$ENCRYPT" = "1" ]; then
             printf '"Boot with standard options"  "%s root=/dev/mapper/cryptroot rw quiet"\n' \
                 "$LUKS_CMDLINE" > /mnt/boot/refind_linux.conf

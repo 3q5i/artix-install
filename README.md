@@ -60,3 +60,4 @@ https://github.com/user-attachments/assets/5d8f86a4-9198-41d7-8f3c-f41f701b747e
 ## Things to add
 - [ ] add MORE wms
 - [ ] add a option to prerice your wm
+- [ ] maybe rewrite it in a different language bash really doesn't scale well

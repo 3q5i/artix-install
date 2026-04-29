@@ -64,7 +64,6 @@ if [ "${1:-}" = "--test" ]; then
     MULTILIB=0
     ENABLE_ARCH=0
     ENABLE_GALAXY=0
-    ENABLE_GALAXY32=0
     ENABLE_CACHYOS=0
     # partition layout
     [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
@@ -159,7 +158,6 @@ PRIV_ESC="doas"
 MULTILIB=0
 ENABLE_ARCH=0
 ENABLE_GALAXY=0
-ENABLE_GALAXY32=0
 ENABLE_CACHYOS=0
 
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
@@ -388,18 +386,16 @@ case "$STEP" in
 12) # Extra repos
     _repos=$(whiptail --title "$TITLE" --checklist \
         "Extra Repositories  [12/$STEP_MAX]" \
-        16 72 5 \
+        14 72 4 \
         "multilib"  "lib32 — Steam, Wine, 32-bit apps"              OFF \
         "arch"      "Arch [extra] — wider package selection"        OFF \
         "galaxy"    "Artix galaxy — community packages"             OFF \
-        "galaxy32"  "Artix galaxy-lib32 — 32-bit galaxy packages"  OFF \
         "cachyos"   "CachyOS — performance packages + kernels"     OFF \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     _repos=$(echo "$_repos" | tr -d '"')
     echo "$_repos" | grep -qw multilib && MULTILIB=1      || MULTILIB=0
     echo "$_repos" | grep -qw arch     && ENABLE_ARCH=1   || ENABLE_ARCH=0
     echo "$_repos" | grep -qw galaxy   && ENABLE_GALAXY=1 || ENABLE_GALAXY=0
-    echo "$_repos" | grep -qw galaxy32 && ENABLE_GALAXY32=1 || ENABLE_GALAXY32=0
     echo "$_repos" | grep -qw cachyos  && ENABLE_CACHYOS=1 || ENABLE_CACHYOS=0
     STEP=$(( STEP + 1 )) ;;
 
@@ -886,12 +882,8 @@ Include = /etc/pacman.d/mirrorlist
 Include = /etc/pacman.d/mirrorlist
 ' >> /mnt/etc/pacman.conf
 
-[ "$ENABLE_GALAXY32" = "1" ] && ! grep -q '\[galaxy-lib32\]' /mnt/etc/pacman.conf &&     printf '
-[galaxy-lib32]
-Include = /etc/pacman.d/mirrorlist
-' >> /mnt/etc/pacman.conf
 
-if [ "$MULTILIB" = "1" ] || [ "$ENABLE_ARCH" = "1" ] || [ "$ENABLE_GALAXY" = "1" ] || [ "$ENABLE_GALAXY32" = "1" ]; then
+if [ "$MULTILIB" = "1" ] || [ "$ENABLE_ARCH" = "1" ] || [ "$ENABLE_GALAXY" = "1" ]; then
     artix-chroot /mnt pacman -Sy --noconfirm
 fi
 

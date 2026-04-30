@@ -23,8 +23,8 @@
 - DE/WM(you can also pick cli dont worry): Cosmic(perfomance issues), KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, Icewm and Fluxbox 
 
 ## Known issues
-- Cosmic has an performance problem due to the elogind not communticating properly at least I think thats the issue your cpu will just get pinned at 99%
 - stable release of the iso doesnt work with this installer
+- aur autoconfig is broken
 
 ## Usage
 1.Dowload the WEEKLY iso release NOT THE STABLE one from the artix linux site
@@ -56,7 +56,3 @@ curl -sL https://raw.githubusercontent.com/feribsd/artix-install/main/artix-inst
 
 https://github.com/user-attachments/assets/5d8f86a4-9198-41d7-8f3c-f41f701b747e
 
-
-## Things to add
-- [ ] add MORE wms
-- [ ] you tell me

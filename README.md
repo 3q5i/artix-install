@@ -16,6 +16,7 @@
 - Keyboard layout, locale, timezone
 - Audio - pipewire, pulse or alsa
 - Mirros - autopics the fastest
+- Shell - zsh, bash or fish
 - Doas or Sudo
 - Xorg or Xlibre if youre using X
 - WiFi (carries your live session connection into the install if youre going to use network manager)

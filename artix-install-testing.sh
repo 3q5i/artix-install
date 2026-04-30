@@ -133,7 +133,7 @@ if [ "$TEST_MODE" = "0" ]; then
 # Step-based Q&A with back navigation
 # Each step sets variables; pressing Cancel goes back one step
 STEP=1
-STEP_MAX=13
+STEP_MAX=14
 
 # defaults (overwritten by each step)
 INIT="dinit"
@@ -402,7 +402,7 @@ case "$STEP" in
     # Only show if user picked a bare WM (i3, XMonad, Openbox, etc.)
     if echo "$DE_CHOICES" | grep -qE "i3|XMonad|Openbox|Fluxbox|IceWM"; then
         if whiptail --title "$TITLE" --yesno \
-            "Window Manager Dotfiles  [11/$STEP_MAX]\n\nInstall minimal riced dotfiles for your WM?\n\nIncludes basic i3/bspwm/openbox configs with:\n• Keybinds and basic layout\n• Status bar (polybar/lemonbar)\n• Rofi launcher\n• Simple colorscheme\n\nYou can customize further after installation." \
+            "Window Manager Dotfiles  [12/$STEP_MAX]\n\nInstall minimal riced dotfiles for your WM?\n\nIncludes basic i3/bspwm/openbox configs with:\n• Keybinds and basic layout\n• Status bar (polybar/lemonbar)\n• Rofi launcher\n• Simple colorscheme\n\nYou can customize further after installation." \
             14 70; then
             RICE_WM=1
         else
@@ -415,7 +415,7 @@ case "$STEP" in
 
 12) # Extra repos
     _repos=$(whiptail --title "$TITLE" --checklist \
-        "Extra Repositories  [12/$STEP_MAX]" \
+        "Extra Repositories  [13/$STEP_MAX]" \
         14 72 4 \
         "multilib"  "lib32 — Steam, Wine, 32-bit apps"              OFF \
         "arch"      "Arch [extra] — wider package selection"        OFF \
@@ -430,7 +430,7 @@ case "$STEP" in
     STEP=$(( STEP + 1 )) ;;
 
 13) # Network
-    _v=$(whiptail --title "$TITLE" --menu "Network Stack  [13/$STEP_MAX]" 13 65 3 \
+    _v=$(whiptail --title "$TITLE" --menu "Network Stack  [14/$STEP_MAX]" 13 65 3 \
         "dhcpcd" "dhcpcd  — ethernet only, ~2MB" \
         "iwd"    "iwd     — wifi + ethernet, ~5MB" \
         "NM"     "NetworkManager — full featured, ~30MB" \
@@ -1027,10 +1027,14 @@ printf "127.0.0.1\tlocalhost\n127.0.1.1\t%s\n::1\t\tlocalhost\n" "$HOSTNAME" > /
 # Passwords — pass directly as env vars, no files, no subshells
 ROOTPW_B64=$(printf '%s' "$ROOTPW" | base64)
 USERPW_B64=$(printf '%s' "$USERPW" | base64)
-artix-chroot /mnt bash -c "echo root:\$(echo $ROOTPW_B64 | base64 -d) | chpasswd"
+# Set root password — pipe directly into chpasswd, never in bash -c where it's visible in ps aux
+printf "root:%s\n" "$(printf '%s' "$ROOTPW_B64" | base64 -d)" | artix-chroot /mnt chpasswd
 gauge 55 "Creating user account..."
 artix-chroot /mnt bash -c "useradd -m -G wheel,audio,video,storage,input '$USERNAME'"
-artix-chroot /mnt bash -c "echo $USERNAME:\$(echo $USERPW_B64 | base64 -d) | chpasswd"
+# Set user password — pipe directly into chpasswd, never in bash -c where it's visible in ps aux
+printf "%s:%s\n" "$USERNAME" "$(printf '%s' "$USERPW_B64" | base64 -d)" | artix-chroot /mnt chpasswd
+# Securely unset password variables from memory
+unset ROOTPW USERPW ROOTPW_B64 USERPW_B64
 USER_UID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f3)
 USER_GID=$(grep "^${USERNAME}:" /mnt/etc/passwd | cut -d: -f4)
 
@@ -1063,25 +1067,13 @@ permit keepenv nopass :wheel cmd pacman
 permit keepenv nopass :wheel cmd makepkg
 EOF
     chmod 0400 /mnt/etc/doas.conf
-    # Replace any existing sudo symlink with a wrapper script
-    # doas doesn't support all sudo flags AUR helpers use (-E, -u, --, --preserve-env)
-    rm -f /mnt/usr/bin/sudo
-    cat > /mnt/usr/local/bin/sudo << 'SUDOWRAP'
-#!/bin/sh
-# Thin sudo->doas wrapper — handles flags yay/paru/makepkg commonly pass
-_preserve_env=0
-while [ $# -gt 0 ]; do
-    case "$1" in
-        -E|--preserve-env) _preserve_env=1; shift ;;
-        -u|--user) shift; exec doas -u "$1" -- "${@:2}" ;;
-        --) shift; break ;;
-        -*) shift ;;  # ignore unknown flags
-        *) break ;;
-    esac
-done
-[ "$_preserve_env" = "1" ] && exec doas env "$@" || exec doas "$@"
-SUDOWRAP
-    chmod +x /mnt/usr/local/bin/sudo
+    # Install both doas and sudo for maximum compatibility
+    # doas is preferred, but some AUR tools expect sudo
+    artix-chroot /mnt pacman -S --noconfirm sudo
+    # Configure sudoers for wheel group with NOPASSWD for pacman (optional, keeps it consistent with doas)
+    mkdir -p /mnt/etc/sudoers.d
+    printf '%%wheel ALL=(ALL:ALL) NOPASSWD: /usr/bin/pacman\n' > /mnt/etc/sudoers.d/pacman
+    chmod 440 /mnt/etc/sudoers.d/pacman
 fi
 
 # Apply WM riced dotfiles if requested
@@ -1820,6 +1812,7 @@ verbose: no
     protocol: linux
     path: boot():/vmlinuz-$FIRST_KERNEL
     cmdline: $LIMINE_CMDLINE
+    module_path: boot():/${UCODE}.img
     module_path: boot():/initramfs-$FIRST_KERNEL.img
 EOF
         ;;
@@ -1834,12 +1827,14 @@ EOF
             --label "rEFInd" \
             --loader '\\EFI\\refind\\refind_x64.efi' 2>/dev/null || true
         ROOT_UUID=$(blkid -s UUID -o value "${REAL_ROOT:-$ROOT}")
+        # Build initrd line with microcode first, then initramfs
+        _INITRD="initrd=/${UCODE}.img initrd=/initramfs-$FIRST_KERNEL.img"
         if [ "$ENCRYPT" = "1" ]; then
-            printf '"Boot with standard options"  "%s root=/dev/mapper/cryptroot rw quiet"\n' \
-                "$LUKS_CMDLINE" > /mnt/boot/refind_linux.conf
+            printf '"Boot with standard options"  "%s root=/dev/mapper/cryptroot rw quiet %s"\n' \
+                "$LUKS_CMDLINE" "$_INITRD" > /mnt/boot/refind_linux.conf
         else
-            printf '"Boot with standard options"  "root=UUID=%s rw quiet"\n"Boot to terminal"            "root=UUID=%s rw init=/sbin/$INIT"\n"Boot with minimal options"   "root=UUID=%s rw"\n' \
-                "$ROOT_UUID" "$ROOT_UUID" "$ROOT_UUID" > /mnt/boot/refind_linux.conf
+            printf '"Boot with standard options"  "root=UUID=%s rw quiet %s"\n"Boot to terminal"            "root=UUID=%s rw init=/sbin/$INIT %s"\n"Boot with minimal options"   "root=UUID=%s rw %s"\n' \
+                "$ROOT_UUID" "$_INITRD" "$ROOT_UUID" "$_INITRD" "$ROOT_UUID" "$_INITRD" > /mnt/boot/refind_linux.conf
         fi
         ;;
 esac

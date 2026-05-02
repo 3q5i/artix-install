@@ -15,22 +15,21 @@ The official installer gives you a working system. This one gives you *your* sys
 | Category | Options |
 |---|---|
 | **Disk & Filesystem** | ext4, btrfs, xfs, f2fs, zfs and more |
-| **Kernels** | standard, lts, zen · custom: CachyOS, Liquorix · XanMod (testing) |
+| **Kernels** | standard, lts, zen · custom: CachyOS, Liquorix |
 | **Bootloader** | GRUB, Limine, rEFInd |
 | **Swap** | zram, swapfile, both, or none |
 | **Hardware** | Firmware, GPU drivers |
 | **Locale** | keyboard layout, locale, timezone |
 | **Audio** | PipeWire, PulseAudio, ALSA |
 | **Mirrors** | auto-picks fastest on install |
-| **Shell** | bash, zsh, fish |
+| **Shell**(testing) | bash, zsh, fish, sh |
 | **Privilege escalation** | doas or sudo |
 | **X11 server** | Xorg or XLibre |
 | **Networking** | NetworkManager (carries live WiFi into install), iwd, dhcpcd |
-| **Repos** | multilib, Arch, CachyOS, Galaxy |
+| **Repos**(testing) | multilib, Arch, CachyOS, Galaxy |
 | **DE / WM** | KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, IceWM, Fluxbox · sway, bspwm (untested) |
-| **WM precising** | Minimal dotfiles which are taken from https://cachyos.org/ |
+| **WM prericing**(testing) | Minimal dotfiles which are taken from https://cachyos.org/ |
 
-> **AUR helper (yay / paru)** — available in stable only. Removed in testing due to compatibility issues with doas.
 
 ---
 

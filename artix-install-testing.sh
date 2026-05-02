@@ -56,6 +56,7 @@ if [ "${1:-}" = "--test" ]; then
     USER_SHELL="/bin/bash"
     ROOTPW="idk"; USERPW="idk"
     INSTALL_TYPE="CLI"; DE_CHOICES="CLI"; PRESET="minimal"
+    XSERVER_CHOICE="xlibre"
     AUDIO_DAEMON="pipewire"
     EXTRA_PKGS=""
     KERNEL_CHOICES="linux"; FIRST_KERNEL="linux"
@@ -158,6 +159,7 @@ USERNAME="user"
 USER_SHELL="/bin/bash"
 ROOTPW=""; USERPW=""
 INSTALL_TYPE="CLI"; DE_CHOICES="CLI"; PRESET="minimal"
+XSERVER_CHOICE="xlibre"
 AUDIO_DAEMON="pipewire"
 EXTRA_PKGS=""
 KERNEL_CHOICES="linux"; FIRST_KERNEL="linux"
@@ -372,23 +374,40 @@ case "$STEP" in
     if [ "$INSTALL_TYPE" = "DE" ]; then
         DE_CHOICES=$(whiptail --title "$TITLE" --checklist \
             "Select DE/WM  [9/$STEP_MAX]  (space=toggle)" 22 72 14 \
-            "Plasma"   "KDE Plasma — modern, feature-rich"                OFF \
+            "Plasma"   "KDE Plasma — modern desktop environment"                OFF \
             "XFCE"     "XFCE4 — lightweight, classic"                     OFF \
             "LXQt"     "LXQt — Qt-based lightweight"                       OFF \
-            "GNOME"    "GNOME — older version (no systemd support, unmaintained)" OFF \
-            "i3"       "i3wm — tiling"                                    OFF \
-            "bspwm"    "bspwm — binary space partition"                   OFF \
-            "XMonad"   "XMonad — functional, Haskell-based"              OFF \
+            "GNOME"    "GNOME — older version (due to them being dependent on systemD)" OFF \
+            "i3"       "i3wm — the most basic tiling window manager"                                    OFF \
+            "bspwm"    "bspwm — mix of dwm and i3"                   OFF \
+            "XMonad"   "XMonad — the last honest window manager"              OFF \
             "Openbox"  "Openbox — highly configurable"                    OFF \
             "Fluxbox"  "Fluxbox — minimal, fast"                          OFF \
-            "IceWM"    "IceWM — retro, WindowMaker-style"                 OFF \
-            "Sway"     "Sway — i3-like on Wayland"                        OFF \
+            "IceWM"    "IceWM — retro and minimal"                 OFF \
+            "Sway"     "Sway — i3 but for Wayland"                        OFF \
             "Hyprland" "Hyprland — modern Wayland compositor"             OFF \
             "Moksha"   "Moksha — Enlightenment fork"                      OFF \
-            "dwm"      "dwm — ultra-minimal (AUR, manual patching)"       OFF \
+            "dwm"      "dwm — suckless window manager for X"       OFF \
             3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
         DE_CHOICES=$(echo "$DE_CHOICES" | tr -d '"')
         [ -z "$DE_CHOICES" ] && DE_CHOICES="CLI"
+        
+        # X server choice for bare WMs and DEs that need it
+        XSERVER_CHOICE="xlibre"
+        if echo "$DE_CHOICES" | grep -qwE "Sway|Hyprland"; then
+            # Wayland-only - no X server needed
+            XSERVER_CHOICE="none"
+        elif echo "$DE_CHOICES" | grep -qwE "dwm|i3|XMonad|Openbox|Fluxbox|bspwm|IceWM|Plasma|XFCE|LXQt"; then
+            # These need X server - ask which one
+            _xsrv=$(whiptail --title "$TITLE" --menu \
+                "X Server  [9/$STEP_MAX]\n\nChoose X server implementation:" 12 70 3 \
+                "xlibre" "XLibre — More modern fork of Xorg" \
+                "xorg"   "Xorg — Original X server" \
+                "none"   "None — Wayland or no graphical server" \
+                3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+            XSERVER_CHOICE="$_xsrv"
+        fi
+        
         # Warn about GNOME
         if echo "$DE_CHOICES" | grep -qw "GNOME"; then
             whiptail --title "$TITLE" --msgbox \
@@ -691,6 +710,68 @@ done
 fi  # end TEST_MODE=0 Q&A
 
 # =========================
+# HELPER FUNCTIONS (early definition for use throughout)
+# =========================
+
+# section headers during install
+gauge() {
+    echo ""
+    echo "==> ${2}"
+    echo ""
+}
+
+# svc_pkg <svc> — returns init-specific package name
+svc_pkg() {
+    case "$INIT" in
+        dinit)  echo "${1}-dinit" ;;
+        openrc) echo "${1}-openrc" ;;
+        runit)  echo "${1}-runit" ;;
+        s6)     echo "${1}-s6" ;;
+    esac
+}
+
+# svc_enable <svc> — enable service in installed system
+# NOTE: for runit/s6/dinit, /run is a tmpfs not yet mounted in chroot,
+# so we link into persistent dirs (runsvdir/default or adminsv/default/contents.d)
+svc_enable() {
+    local _s="$1"
+    case "$INIT" in
+        dinit)
+            if [ -f "/mnt/etc/dinit.d/$_s" ]; then
+                artix-chroot /mnt ln -sf "/etc/dinit.d/$_s" /etc/dinit.d/boot.d/
+            else
+                echo "Warning: dinit service $_s not found"
+            fi
+            ;;
+        openrc)
+            artix-chroot /mnt rc-update add "$_s" default 2>/dev/null || \
+                echo "Warning: openrc service $_s not found"
+            ;;
+        runit)
+            # Link into runsvdir/default — NOT /run/runit/service (tmpfs, not mounted in chroot)
+            if [ -d "/mnt/etc/runit/sv/$_s" ]; then
+                mkdir -p /mnt/etc/runit/runsvdir/default
+                artix-chroot /mnt ln -sf "/etc/runit/sv/$_s" /etc/runit/runsvdir/default/
+            else
+                echo "Warning: runit service $_s not found in /etc/runit/sv/"
+            fi
+            ;;
+        s6)
+            # Add to default bundle contents.d; s6-db-reload compiles at end
+            if [ -d "/mnt/etc/s6/sv/${_s}-srv" ] || [ -d "/mnt/etc/s6/adminsv/$_s" ]; then
+                mkdir -p /mnt/etc/s6/adminsv/default/contents.d
+                touch "/mnt/etc/s6/adminsv/default/contents.d/$_s"
+            else
+                echo "Note: s6 service $_s not found in sv/adminsv (may be in base bundle)"
+            fi
+            ;;
+    esac
+}
+
+# fs_key: sanitize a device path to use as assoc array key (/dev/sda1 -> dev_sda1)
+fs_key() { echo "${1//\//_}" | sed 's/^_//'; }
+
+# =========================
 # PRE-INSTALL SUMMARY
 # =========================
 if [ "$TEST_MODE" = "0" ]; then
@@ -702,7 +783,18 @@ if [ "$TEST_MODE" = "0" ]; then
     _summary="$_summary✓ Init: $INIT\n"
     _summary="$_summary✓ Filesystem: $FS\n"
     _summary="$_summary✓ Swap: $SWAP\n"
-    _summary="$_summary✓ Encryption: $([ "$ENCRYPT_TYPE" = "none" ] && echo "None" || [ "$ENCRYPT_TYPE" = "luks1" ] && echo "LUKS1" || [ "$ENCRYPT_TYPE" = "luks2" ] && echo "LUKS2" || [ "$ENCRYPT_TYPE" = "ecryptfs" ] && echo "eCryptfs (home only)" || echo "None")\n"
+    
+    # Determine encryption display string
+    if [ "$ENCRYPT_TYPE" = "luks1" ]; then
+        _enc_display="LUKS1"
+    elif [ "$ENCRYPT_TYPE" = "luks2" ]; then
+        _enc_display="LUKS2"
+    elif [ "$ENCRYPT_TYPE" = "ecryptfs" ]; then
+        _enc_display="eCryptfs (home only)"
+    else
+        _enc_display="None"
+    fi
+    _summary="$_summary✓ Encryption: $_enc_display\n"
     _summary="$_summary✓ Bootloader: $BOOTLOADER\n"
     _summary="$_summary✓ Kernel: $FIRST_KERNEL\n"
     _summary="$_summary✓ DE/WM: $(echo "$DE_CHOICES" | tr '\n' ' ')\n"
@@ -963,59 +1055,6 @@ done
 [ -n "${SWAP_PART:-}" ] && swapon "$SWAP_PART"
 
 # section headers during install
-gauge() {
-    echo ""
-    echo "==> ${2}"
-    echo ""
-}
-
-# svc_pkg <svc> — returns init-specific package name
-svc_pkg() {
-    case "$INIT" in
-        dinit)  echo "${1}-dinit" ;;
-        openrc) echo "${1}-openrc" ;;
-        runit)  echo "${1}-runit" ;;
-        s6)     echo "${1}-s6" ;;
-    esac
-}
-
-# svc_enable <svc> — enable service in installed system
-# NOTE: for runit/s6/dinit, /run is a tmpfs not yet mounted in chroot,
-# so we link into persistent dirs (runsvdir/default or adminsv/default/contents.d)
-svc_enable() {
-    local _s="$1"
-    case "$INIT" in
-        dinit)
-            if [ -f "/mnt/etc/dinit.d/$_s" ]; then
-                artix-chroot /mnt ln -sf "/etc/dinit.d/$_s" /etc/dinit.d/boot.d/
-            else
-                echo "Warning: dinit service $_s not found"
-            fi
-            ;;
-        openrc)
-            artix-chroot /mnt rc-update add "$_s" default 2>/dev/null || \
-                echo "Warning: openrc service $_s not found"
-            ;;
-        runit)
-            # Link into runsvdir/default — NOT /run/runit/service (tmpfs, not mounted in chroot)
-            if [ -d "/mnt/etc/runit/sv/$_s" ]; then
-                mkdir -p /mnt/etc/runit/runsvdir/default
-                artix-chroot /mnt ln -sf "/etc/runit/sv/$_s" /etc/runit/runsvdir/default/
-            else
-                echo "Warning: runit service $_s not found in /etc/runit/sv/"
-            fi
-            ;;
-        s6)
-            # Add to default bundle contents.d; s6-db-reload compiles at end
-            if [ -d "/mnt/etc/s6/sv/${_s}-srv" ] || [ -d "/mnt/etc/s6/adminsv/$_s" ]; then
-                mkdir -p /mnt/etc/s6/adminsv/default/contents.d
-                touch "/mnt/etc/s6/adminsv/default/contents.d/$_s"
-            else
-                echo "Note: s6 service $_s not found in sv/adminsv (may be in base bundle)"
-            fi
-            ;;
-    esac
-}
 
 # swapfile
 if [[ "$SWAP" =~ Swapfile|Both ]]; then
@@ -1039,11 +1078,16 @@ done
 [ "$DE_CHOICES" = "CLI" ] && BARE_WM_ONLY=0
 [ "$BARE_WM_ONLY" = "1" ] && GPU=""
 
-# XLibre is now in the main Artix [world] repo — no extra repo needed
+# X server packages - choose between XLibre (Artix fork) or Xorg (original)
 XORG_PKGS=""
-if [ "$DE_CHOICES" != "CLI" ] && ! echo "$DE_CHOICES" | grep -qw "Cosmic" && ! echo "$DE_CHOICES" | grep -qw "Hyprland"; then
+if [ "$XSERVER_CHOICE" = "xlibre" ]; then
+    # XLibre - Artix fork, lighter and recommended
     XORG_PKGS="xlibre-xserver xlibre-xserver-common xlibre-input-libinput xorg-xinit"
+elif [ "$XSERVER_CHOICE" = "xorg" ]; then
+    # Xorg - Original X server
+    XORG_PKGS="xorg-server xorg-server-common xorg-xinput xorg-xinit"
 fi
+# If XSERVER_CHOICE="none" (Wayland only), XORG_PKGS stays empty
 
 # Build preset packages based on user selection
 PRESET_PKGS=""

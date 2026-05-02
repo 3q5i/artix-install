@@ -5,11 +5,21 @@ set -o pipefail
 # Detect firmware type
 [ -d /sys/firmware/efi ] && UEFI=1 || UEFI=0
 
-# Restore terminal and show log if install fails
- trap 'echo ""
-       echo "INSTALL FAILED at line $LINENO"
+# Enhanced error handler with context
+trap 'echo ""
+       echo "╔═══════════════════════════════════════════════╗"
+       echo "║         INSTALLATION FAILED                   ║"
+       echo "╚═══════════════════════════════════════════════╝"
        echo ""
+       echo "Error at line $LINENO"
+       echo "Last command: $BASH_COMMAND"
+       echo ""
+       echo "Cleaning up mounts..."
        umount -R /mnt 2>/dev/null || true
+       cryptsetup close cryptroot 2>/dev/null || true
+       echo ""
+       echo "To retry, run: bash artix-install.sh"
+       echo ""
        exit 1' ERR
 
 # unmount/cleanup everything from a previous run so the script is re-runnable
@@ -73,6 +83,8 @@ if [ "${1:-}" = "--test" ]; then
     ENABLE_CACHYOS=0
     # partition layout
     RICE_WM=0
+    USE_LIGHTDM=0
+    PRIMARY_WM=""
     [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
     if [ "$UEFI" = "1" ]; then
         PART_DEVS=("${DISK}${P}1" "${DISK}${P}2")
@@ -174,6 +186,8 @@ ENABLE_GALAXY=0
 ENABLE_CACHYOS=0
 
 RICE_WM=0
+USE_LIGHTDM=0
+PRIMARY_WM=""
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
 (( RAM_HALF_GB < 1  )) && RAM_HALF_GB=1
 (( RAM_HALF_GB > 16 )) && RAM_HALF_GB=16
@@ -439,14 +453,11 @@ case "$STEP" in
         "linux-lts"     "LTS — long term support"                     OFF \
         "linux-zen"     "Zen — desktop optimised"                     OFF \
         "linux-lqx"     "Liquorix — low latency"                      OFF \
-        "linux-cachyos" "CachyOS — BORE scheduler (adds CachyOS repo)" OFF \
-        "linux-xanmod"  "XanMod — AUR, compiles from source (~1hr)"   OFF \
+        "linux-cachyos" "CachyOS — BORE scheduler"                   OFF \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
     KERNEL_CHOICES=$(echo "$KERNEL_CHOICES" | tr -d '"')
     [ -z "$KERNEL_CHOICES" ] && KERNEL_CHOICES="linux"
     FIRST_KERNEL=$(echo "$KERNEL_CHOICES" | awk '{print $1}')
-    # XanMod is AUR-only, can't be basestrapped — use linux as base if xanmod is first
-    [ "$FIRST_KERNEL" = "linux-xanmod" ] && FIRST_KERNEL="linux"
     _v=$(whiptail --title "$TITLE" --menu "CPU Vendor  [10/$STEP_MAX]" 10 50 3 \
         "intel" "Intel" "amd" "AMD" "other" "Other / VM" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
@@ -677,6 +688,51 @@ case "$STEP" in
     fi
     STEP=$(( STEP + 1 )) ;;
 
+12.5) # X11 WM Session Management (for bare X11 window managers)
+    WM_COUNT=$(echo "$DE_CHOICES" | wc -w)
+    # Only relevant if user picked X11 WMs and X11 is available
+    if [ "$XSERVER_CHOICE" = "xlibre" ] || [ "$XSERVER_CHOICE" = "xorg" ]; then
+        if echo "$DE_CHOICES" | grep -qE "dwm|i3|bspwm|XMonad|Openbox|Fluxbox|IceWM"; then
+            # User selected at least one X11 WM
+            if [ "$WM_COUNT" -eq 1 ]; then
+                # Single WM - create .xinitrc with that WM
+                WM_SINGLE="$DE_CHOICES"
+                whiptail --title "$TITLE" --msgbox \
+                    "X11 Session Setup  [12.5/$STEP_MAX]\n\nYou selected: $WM_SINGLE\n\nWill create .xinitrc to start with:\n  dbus-run-session $WM_SINGLE\n\nYou can start X with: startx" \
+                    11 70
+                USE_LIGHTDM=0
+            else
+                # Multiple WMs - ask user preference
+                _display=$(whiptail --title "$TITLE" --menu \
+                    "X11 Session Manager  [12.5/$STEP_MAX]\n\nYou selected multiple window managers.\nHow do you want to start X11?" 14 70 2 \
+                    "startx"   "Use startx — select WM at login" \
+                    "lightdm"  "Use LightDM — graphical login with WM selection" \
+                    3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+                
+                if [ "$_display" = "lightdm" ]; then
+                    USE_LIGHTDM=1
+                    whiptail --title "$TITLE" --msgbox \
+                        "LightDM Setup\n\nLightDM will be installed and configured.\nYou can select your WM at the login screen." \
+                        9 70
+                else
+                    USE_LIGHTDM=0
+                    # Ask for primary WM
+                    _primary=$(whiptail --title "$TITLE" --menu \
+                        "Primary Window Manager  [12.5/$STEP_MAX]\n\nSelect your default WM when using startx:" 13 70 10 \
+                        $(echo "$DE_CHOICES" | tr ' ' '\n' | head -10 | sed 's/\(.*\)/\1 "\1"/' | tr '\n' ' ') \
+                        3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
+                    PRIMARY_WM="$_primary"
+                fi
+            fi
+        else
+            USE_LIGHTDM=0
+        fi
+    else
+        # Wayland only or CLI - no X11 needed
+        USE_LIGHTDM=0
+    fi
+    STEP=$(( STEP + 1 )) ;;
+
 13) # Extra repos
     _repos=$(whiptail --title "$TITLE" --checklist \
         "Extra Repositories  [13/$STEP_MAX]" \
@@ -771,6 +827,101 @@ svc_enable() {
 # fs_key: sanitize a device path to use as assoc array key (/dev/sda1 -> dev_sda1)
 fs_key() { echo "${1//\//_}" | sed 's/^_//'; }
 
+# Configure X11 WM sessions (.xinitrc and/or LightDM)
+setup_x11_sessions() {
+    local _wm_list="$1"  # space-separated WM names
+    local _use_lightdm="$2"
+    local _primary_wm="$3"
+    
+    echo "==> Setting up X11 window manager sessions..."
+    
+    # Determine which WM to default to
+    if [ -n "$_primary_wm" ]; then
+        _default_wm="$_primary_wm"
+    else
+        # Single WM case - use that one
+        _default_wm=$(echo "$_wm_list" | awk '{print $1}')
+    fi
+    
+    # Check if this is a bare WM (not a full DE) - only bare WMs need dbus-run-session
+    _is_bare_wm=0
+    for _wm in dwm i3 bspwm XMonad Openbox Fluxbox IceWM; do
+        if [ "$_default_wm" = "$_wm" ]; then
+            _is_bare_wm=1
+            break
+        fi
+    done
+    
+    # Create .xinitrc in user home
+    artix-chroot /mnt bash << XINITRC_SETUP
+# Create .xinitrc for user
+mkdir -p /home/$USERNAME
+cat > /home/$USERNAME/.xinitrc << 'EOF'
+#!/bin/bash
+# Artix auto-generated .xinitrc
+
+EOF
+
+# Only add dbus-run-session for bare window managers, not full DEs
+if [ "$_is_bare_wm" = "1" ]; then
+    cat >> /home/$USERNAME/.xinitrc << 'EOF'
+# Start D-Bus session for standalone WM
+exec dbus-run-session $_default_wm
+EOF
+else
+    cat >> /home/$USERNAME/.xinitrc << 'EOF'
+# Direct WM execution (DE handles D-Bus)
+exec $_default_wm
+EOF
+fi
+
+chmod 755 /home/$USERNAME/.xinitrc
+chown $USERNAME:$USERNAME /home/$USERNAME/.xinitrc
+
+# If multiple WMs, add menu comments
+if [ "$WM_COUNT" -gt 1 ]; then
+    cat >> /home/$USERNAME/.xinitrc << 'EOF'
+# Other available WMs: $(echo "$_wm_list" | tr ' ' ', ')
+# Edit this file to switch or use: startx -- -e <wm_name>
+EOF
+fi
+
+XINITRC_SETUP
+    
+    # Configure LightDM if requested
+    if [ "$_use_lightdm" = "1" ]; then
+        echo "==> Installing and configuring LightDM..."
+        artix-chroot /mnt pacman -S --noconfirm lightdm lightdm-gtk-greeter || true
+        
+        # Enable LightDM service based on init system
+        case "$INIT" in
+            dinit)
+                ln -sf /etc/dinit.d/lightdm /mnt/etc/dinit.d/boot.d/ 2>/dev/null || true
+                ;;
+            openrc)
+                artix-chroot /mnt rc-update add lightdm default 2>/dev/null || true
+                ;;
+            runit)
+                mkdir -p /mnt/etc/runit/runsvdir/default
+                ln -sf /etc/runit/sv/lightdm /mnt/etc/runit/runsvdir/default/ 2>/dev/null || true
+                ;;
+            s6)
+                mkdir -p /mnt/etc/s6/adminsv/default/contents.d
+                touch /mnt/etc/s6/adminsv/default/contents.d/lightdm
+                ;;
+        esac
+        
+        # Configure LightDM to use first WM as default
+        [ -f /mnt/etc/lightdm/lightdm.conf ] && \
+            sed -i "s/^session=.*/session=$_default_wm/" /mnt/etc/lightdm/lightdm.conf
+        
+        echo "==> LightDM configured for: $_default_wm"
+    else
+        echo "==> Using startx with primary WM: $_default_wm"
+        echo "    Start X with: startx"
+    fi
+}
+
 # =========================
 # PRE-INSTALL SUMMARY
 # =========================
@@ -795,9 +946,18 @@ if [ "$TEST_MODE" = "0" ]; then
         _enc_display="None"
     fi
     _summary="$_summary✓ Encryption: $_enc_display\n"
-    _summary="$_summary✓ Bootloader: $BOOTLOADER\n"
+    _summary="$_summary✓ Bootloader: $BOOT\n"
     _summary="$_summary✓ Kernel: $FIRST_KERNEL\n"
+    _summary="$_summary✓ CPU Microcode: $UCODE\n"
+    _summary="$_summary✓ GPU: $GPU_CHOICE\n"
     _summary="$_summary✓ DE/WM: $(echo "$DE_CHOICES" | tr '\n' ' ')\n"
+    if [ "$XSERVER_CHOICE" != "none" ]; then
+        _summary="$_summary✓ X Server: $XSERVER_CHOICE\n"
+    fi
+    if [ "$INSTALL_TYPE" = "DE" ]; then
+        _summary="$_summary✓ Audio Daemon: $AUDIO_DAEMON\n"
+        _summary="$_summary✓ Software Preset: $PRESET\n"
+    fi
     _summary="$_summary✓ Hostname: $HOSTNAME\n"
     _summary="$_summary✓ User: $USERNAME\n"
     _summary="$_summary━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nReview the above. Continue?"
@@ -811,6 +971,14 @@ fi
 
 # partition manager
 if [ "$TEST_MODE" = "0" ]; then
+echo ""
+echo "╔═══════════════════════════════════════════════╗"
+echo "║   BEGINNING ARTIX INSTALLATION                ║"
+echo "║   Disk: $DISK  |  Init: $INIT                  ║"
+echo "║   Boot: $BOOT  |  Kernel: $FIRST_KERNEL        ║"
+echo "╚═══════════════════════════════════════════════╝"
+echo ""
+
 DISK_SIZE=$(lsblk -bdno SIZE "$DISK" 2>/dev/null || echo 0)
 DISK_SIZE_GB=$(( DISK_SIZE / 1024 / 1024 / 1024 ))
 EFI=""; ROOT=""; DUALBOOT=0
@@ -913,6 +1081,15 @@ fi  # end TEST_MODE=0 partition manager
 
 if [ "$DUALBOOT" = "0" ] && [ "${PART_MODE:-auto}" != "manual" ]; then
     # Fresh install — wipe and write new partition table via sfdisk
+    # MANDATORY secondary confirmation for data destruction
+    if ! whiptail --title "FINAL WARNING" --yesno \
+        "⚠️  FINAL DATA DESTRUCTION WARNING\n\nYou are about to PERMANENTLY ERASE ALL DATA on:\n\n$DISK\n\nThis action CANNOT be undone.\n\nType 'yes' to confirm you understand all data will be lost:" \
+        14 70; then
+        echo ""
+        echo "Installation cancelled — no data was erased."
+        exit 0
+    fi
+    
     wipefs -af "$DISK"
     {
         [ "$UEFI" = "1" ] && echo "label: gpt" || echo "label: dos"
@@ -1099,8 +1276,8 @@ case "$PRESET" in
     dev)
         # Developer: git, compiler, languages, code editor
         PRESET_PKGS="git base-devel gcc python python-pip nodejs npm"
-        echo "==> Note: VS Code available via AUR after install (yay -S code or paru -S code)"
         ;;
+
     gaming)
         # Gaming: Steam (needs 32-bit), Lutris, Wine, proton tools
         # Enable multilib automatically for gaming
@@ -1352,31 +1529,21 @@ if [ "$NET_CHOICE" = "NM" ] && [ -d /etc/NetworkManager/system-connections ]; th
     chmod 600 /mnt/etc/NetworkManager/system-connections/* 2>/dev/null || true
 fi
 
-# Extra kernels — skip silently if they fail
+# Extra kernels — skip silently if they fail (no AUR)
 for K in $KERNEL_CHOICES; do
     [ "$K" = "$FIRST_KERNEL" ] && continue
-    if [ "$K" = "linux-xanmod" ]; then
-        echo "==> Building linux-xanmod from AUR — this will take a while..."
-        artix-chroot /mnt bash -c "
-            pacman -S --noconfirm --needed git base-devel
-            git clone https://aur.archlinux.org/linux-xanmod.git /tmp/linux-xanmod
-            chown -R ${USERNAME}:${USERNAME} /tmp/linux-xanmod
-            cd /tmp/linux-xanmod
-            # Use doas -u if available, otherwise sudo -u (will be wrapped by our sudo script)
-            doas -u ${USERNAME} bash -c 'cd /tmp/linux-xanmod && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -s' || \
-            sudo -u ${USERNAME} bash -c 'cd /tmp/linux-xanmod && MAKEFLAGS=\"-j\$(nproc)\" makepkg --noconfirm -s'
-            pacman -U --noconfirm /tmp/linux-xanmod/linux-xanmod-*.pkg.tar.zst || true
-            pacman -U --noconfirm /tmp/linux-xanmod/linux-xanmod-headers-*.pkg.tar.zst || true
-            rm -rf /tmp/linux-xanmod
-        " || echo "==> Warning: linux-xanmod build failed, skipping"
-    elif [ "$K" = "linux-cachyos" ]; then
-        artix-chroot /mnt pacman -S --noconfirm linux-cachyos || echo "==> Warning: linux-cachyos failed, skipping"
-    elif [ "$K" = "linux-lqx" ]; then
-        artix-chroot /mnt pacman -S --noconfirm linux-lqx linux-lqx-headers || echo "==> Warning: linux-lqx failed, skipping"
-    else
-        artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers" || echo "==> Warning: $K failed, skipping"
-    fi
+    artix-chroot /mnt pacman -S --noconfirm "$K" "${K}-headers" || echo "==> Warning: $K failed, skipping"
 done
+
+# Ensure NVIDIA headers are installed for all selected kernels if nvidia-dkms is used
+if echo "$GPU" | grep -q "nvidia-dkms"; then
+    gauge 38 "Verifying NVIDIA driver dependencies..."
+    for K in $KERNEL_CHOICES; do
+        # Install headers if not already installed
+        artix-chroot /mnt pacman -S --noconfirm "${K}-headers" 2>/dev/null || \
+            echo "==> Warning: Failed to install ${K}-headers for NVIDIA DKMS compilation"
+    done
+fi
 
 # locale and timezone
 gauge 40 "Setting locale..."
@@ -1831,6 +1998,17 @@ else
     DM=""
 fi
 
+# Setup X11 WM sessions for bare window managers
+if [ "$XSERVER_CHOICE" = "xlibre" ] || [ "$XSERVER_CHOICE" = "xorg" ]; then
+    if echo "$DE_CHOICES" | grep -qE "dwm|i3|bspwm|XMonad|Openbox|Fluxbox|IceWM"; then
+        setup_x11_sessions "$DE_CHOICES" "$USE_LIGHTDM" "$PRIMARY_WM"
+        # If user chose lightdm for WM management, use that as DM
+        if [ "$USE_LIGHTDM" = "1" ]; then
+            DM="lightdm"
+        fi
+    fi
+fi
+
 _failed_des=""
 for DE in $DE_CHOICES; do
     _de_ok=1
@@ -2214,75 +2392,7 @@ gauge 100 "Installation complete!"
 # Unmount filesystems before final menu to prevent lockups
 umount -R /mnt 2>/dev/null || true
 
-# Offer AUR helper setup before final options
-if [ "$PRIV_ESC" = "doas" ]; then
-    echo ""
-    echo "==> AUR Helper Setup"
-    echo ""
-    _aur=$(whiptail --title "$TITLE" --menu \
-        "Select AUR Helper\n\nNote: yay is HEAVILY sudo-centric and causes headaches with doas.\nparu is recommended for doas-only systems." \
-        15 70 3 \
-        "paru"   "paru (RECOMMENDED) — doas-native, no sudo headaches" \
-        "yay"    "yay — install sudo too (works but requires workarounds)" \
-        "none"   "None — use makepkg manually or skip AUR packages" \
-        3>&1 1>&2 2>&3) || _aur="none"
-    
-    case "$_aur" in
-        paru)
-            echo "==> Installing paru from AUR (doas-compatible)..."
-            echo "    (This may take several minutes - do not interrupt)"
-            timeout 1200 artix-chroot /mnt bash << PARU_INSTALL
-pacman -S --noconfirm --needed git base-devel
-git clone https://aur.archlinux.org/paru.git /tmp/paru
-chown -R ${USERNAME}:${USERNAME} /tmp/paru
-cd /tmp/paru
-su -s /bin/bash ${USERNAME} -c 'MAKEFLAGS="-j\$(nproc)" makepkg --noconfirm -si' || true
-rm -rf /tmp/paru
-PARU_INSTALL
-            if [ $? -eq 124 ]; then
-                echo "==> Warning: paru build timed out (>20 mins). You can build it manually later."
-            else
-                echo "==> paru installed successfully"
-            fi
-            ;;
-        yay)
-            echo "==> Installing sudo (required for yay)..."
-            timeout 30 artix-chroot /mnt pacman -S --noconfirm sudo
-            echo "==> Installing yay from AUR..."
-            echo "    (Note: yay will use sudo internally, not doas)"
-            echo "    (Consider using paru instead for better doas integration)"
-            echo "    (This may take several minutes - do not interrupt)"
-            timeout 1200 artix-chroot /mnt bash << YAY_INSTALL
-pacman -S --noconfirm --needed git base-devel
-git clone https://aur.archlinux.org/yay.git /tmp/yay
-chown -R ${USERNAME}:${USERNAME} /tmp/yay
-if command -v doas &>/dev/null; then
-    doas -u ${USERNAME} bash -c 'cd /tmp/yay && MAKEFLAGS="-j\$(nproc)" makepkg --noconfirm -si'
-elif command -v sudo &>/dev/null; then
-    sudo -u ${USERNAME} bash -c 'cd /tmp/yay && MAKEFLAGS="-j\$(nproc)" makepkg --noconfirm -si'
-else
-    echo "==> No sudo / doas found — cannot build yay as non-root"
-fi || true
-rm -rf /tmp/yay
-YAY_INSTALL
-            if [ $? -eq 124 ]; then
-                echo "==> Warning: yay build timed out (>20 mins). You can build it manually later."
-            else
-                echo ""
-                echo "==> WARNING: You now have both doas and sudo."
-                echo "    yay uses sudo internally and won't respect doas configuration."
-                echo "    If you want pure doas, reinstall paru instead."
-            fi
-            ;;
-        *)
-            echo "==> Skipping AUR helper installation."
-            echo "    You can install paru or yay manually after boot:"
-            echo "    $ doas pacman -S base-devel git"
-            echo "    $ git clone https://aur.archlinux.org/paru.git && cd paru && makepkg -si"
-            ;;
-    esac
-    echo ""
-fi
+# No AUR helper - users can install manually if needed
 
 _end=$(whiptail --title "$TITLE" --menu \
     "Installation complete!\n\nWhat would you like to do?" \

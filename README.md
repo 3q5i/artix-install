@@ -35,9 +35,7 @@ The official installer gives you a working system. This one gives you *your* sys
 
 ## Known issues
 
-- The **stable ISO** does not work with this installer — use the weekly ISO instead
-- AUR auto-configuration is broken in the current release
-
+- The **stable ISO does not work** with this installer — **use the weekly ISO** instead
 ---
 
 ## Usage

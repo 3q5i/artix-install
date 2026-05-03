@@ -82,7 +82,6 @@ if [ "${1:-}" = "--test" ]; then
     ENABLE_GALAXY=0
     ENABLE_CACHYOS=0
     # partition layout
-    RICE_WM=0
     USE_LIGHTDM=0
     PRIMARY_WM=""
     [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
@@ -151,7 +150,7 @@ if [ "$TEST_MODE" = "0" ]; then
 # Step-based Q&A with back navigation
 # Each step sets variables; pressing Cancel goes back one step
 STEP=1
-STEP_MAX=14
+STEP_MAX=13
 
 # defaults (overwritten by each step)
 INIT="dinit"
@@ -185,7 +184,6 @@ ENABLE_ARCH=0
 ENABLE_GALAXY=0
 ENABLE_CACHYOS=0
 
-RICE_WM=0
 USE_LIGHTDM=0
 PRIMARY_WM=""
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
@@ -494,79 +492,95 @@ case "$STEP" in
         fi
     fi
     
-    # Detect Broadcom WiFi hardware and prompt for firmware
+    
+    # CONSOLIDATED FIRMWARE & HARDWARE DETECTION
+    # Check for all hardware at once and prompt once
+    _fw_detected=""
+    
+    # Broadcom WiFi (needs explicit prompt - proprietary vs open)
     if lspci 2>/dev/null | grep -qi "broadcom.*wireless\|bcm.*wireless"; then
-        if whiptail --title "$TITLE" --yesno \
-            "Broadcom WiFi Detected  [10/$STEP_MAX]\n\nInstall broadcom-wl-dkms driver?\n\nYes = proprietary driver (most compatible)\nNo = use open source alternatives (may not work on all chips)" \
-            11 70; then
-            GPU="$GPU broadcom-wl-dkms"
-        fi
+        _fw_detected="$_fw_detected broadcom-wifi "
     fi
     
-    # Detect other common firmware needs
-    _fw_pkgs=""
-    
-    # Intel WiFi (iwlwifi)
+    # Intel WiFi
     if lspci 2>/dev/null | grep -qi "intel.*wireless\|iwlwifi"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
+        _fw_detected="$_fw_detected intel-wifi "
     fi
     
     # Qualcomm/Atheros WiFi
     if lspci 2>/dev/null | grep -qi "qualcomm\|atheros.*wireless\|ath9k\|ath10k"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
+        _fw_detected="$_fw_detected qualcomm-atheros-wifi "
     fi
     
     # Realtek WiFi/Ethernet
     if lspci 2>/dev/null | grep -qi "realtek.*wireless\|rtl.*\|r8"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
+        _fw_detected="$_fw_detected realtek-wifi "
     fi
     
-    # NVIDIA GPU firmware (nouveau, nvenc)
+    # NVIDIA GPU firmware
     if lspci 2>/dev/null | grep -qi "nvidia.*vga\|nvidia.*3d"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
+        _fw_detected="$_fw_detected nvidia-gpu "
     fi
     
     # AMD/ATI GPU firmware
     if lspci 2>/dev/null | grep -qi "amd.*vga\|ati.*vga\|radeon"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
+        _fw_detected="$_fw_detected amd-gpu "
     fi
     
-    # Sound cards that need firmware
+    # Sound cards
     if lspci 2>/dev/null | grep -qi "sigmatel\|cirrus\|conexant"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
+        _fw_detected="$_fw_detected audio-firmware "
     fi
     
-    # Add detected firmware packages to GPU string (will be installed with GPU)
-    if [ -n "$_fw_pkgs" ]; then
-        _detected=$(echo "$_fw_pkgs" | xargs -n1 | sort -u | tr '\n' ' ')
-        if whiptail --title "$TITLE" --yesno \
-            "Firmware Detected\n\nAuto-detected hardware firmware needed:\n$_detected\n\nInstall?" \
-            11 70; then
-            GPU="$GPU $_detected"
-        fi
-    fi
-    
-    # Detect other useful packages based on hardware
-    _extra_pkgs=""
-    
-    # RAID/LVM detection
+    # RAID/LVM
     if lsblk 2>/dev/null | grep -qi "raid\|dm-"; then
-        _extra_pkgs="$_extra_pkgs mdadm lvm2"
+        _fw_detected="$_fw_detected raid-lvm "
     fi
     
-    # NVMe-specific tools
+    # NVMe
     if lsblk 2>/dev/null | grep -qi "nvme"; then
-        _extra_pkgs="$_extra_pkgs nvme-cli"
+        _fw_detected="$_fw_detected nvme "
     fi
     
-    # Encryption utilities already included if ENCRYPT=1, but ensure cryptsetup
+    # Encryption
     if [ "$ENCRYPT" = "1" ]; then
-        _extra_pkgs="$_extra_pkgs cryptsetup"
+        _fw_detected="$_fw_detected encryption "
     fi
     
-    # Add to basestrap if any detected
-    if [ -n "$_extra_pkgs" ]; then
-        EXTRA_PKGS=$(echo "$_extra_pkgs" | xargs -n1 | sort -u | tr '\n' ' ')
+    # Show ONE consolidated firmware/hardware prompt
+    if [ -n "$_fw_detected" ]; then
+        _hw_msg="Auto-Detected Hardware:\n\n"
+        echo "$_fw_detected" | grep -q "broadcom-wifi" && _hw_msg="$_hw_msg• Broadcom WiFi\n"
+        echo "$_fw_detected" | grep -q "intel-wifi" && _hw_msg="$_hw_msg• Intel WiFi\n"
+        echo "$_fw_detected" | grep -q "qualcomm-atheros" && _hw_msg="$_hw_msg• Qualcomm/Atheros WiFi\n"
+        echo "$_fw_detected" | grep -q "realtek-wifi" && _hw_msg="$_hw_msg• Realtek WiFi\n"
+        echo "$_fw_detected" | grep -q "nvidia-gpu" && _hw_msg="$_hw_msg• NVIDIA GPU\n"
+        echo "$_fw_detected" | grep -q "amd-gpu" && _hw_msg="$_hw_msg• AMD GPU\n"
+        echo "$_fw_detected" | grep -q "audio-firmware" && _hw_msg="$_hw_msg• Audio Firmware\n"
+        echo "$_fw_detected" | grep -q "raid-lvm" && _hw_msg="$_hw_msg• RAID/LVM\n"
+        echo "$_fw_detected" | grep -q "nvme" && _hw_msg="$_hw_msg• NVMe Tools\n"
+        echo "$_fw_detected" | grep -q "encryption" && _hw_msg="$_hw_msg• LUKS Encryption\n"
+        
+        whiptail --title "$TITLE" --msgbox \
+            "Hardware Detection  [10/$STEP_MAX]\n\n$_hw_msg\nAll required packages will be automatically installed." \
+            16 70
+        
+        # Install firmware packages
+        GPU="$GPU linux-firmware"
+        
+        # Install tools for detected hardware
+        echo "$_fw_detected" | grep -q "raid-lvm" && EXTRA_PKGS="$EXTRA_PKGS mdadm lvm2"
+        echo "$_fw_detected" | grep -q "nvme" && EXTRA_PKGS="$EXTRA_PKGS nvme-cli"
+        echo "$_fw_detected" | grep -q "encryption" && EXTRA_PKGS="$EXTRA_PKGS cryptsetup"
+        
+        # Broadcom needs explicit choice
+        if echo "$_fw_detected" | grep -q "broadcom-wifi"; then
+            if whiptail --title "$TITLE" --yesno \
+                "Broadcom WiFi  [10/$STEP_MAX]\n\nUse proprietary driver?\n\nYes = broadcom-wl-dkms (most compatible)\nNo = open source (may not work)" \
+                10 70; then
+                GPU="$GPU broadcom-wl-dkms"
+            fi
+        fi
     fi
     
     # Audio daemon choice (only if desktop DE selected)
@@ -673,22 +687,7 @@ case "$STEP" in
     fi
     STEP=$(( STEP + 1 )) ;;
 
-12) # WM dotfiles / rice
-    # Only show if user picked a bare WM (i3, XMonad, Openbox, etc.)
-    if echo "$DE_CHOICES" | grep -qE "i3|XMonad|Openbox|Fluxbox|IceWM"; then
-        if whiptail --title "$TITLE" --yesno \
-            "Window Manager Dotfiles  [12/$STEP_MAX]\n\nInstall minimal riced dotfiles for your WM?\n\nIncludes basic i3/bspwm/openbox configs with:\n• Keybinds and basic layout\n• Status bar (polybar/lemonbar)\n• Rofi launcher\n• Simple colorscheme\n\nYou can customize further after installation." \
-            14 70; then
-            RICE_WM=1
-        else
-            RICE_WM=0
-        fi
-    else
-        RICE_WM=0
-    fi
-    STEP=$(( STEP + 1 )) ;;
-
-12.5) # X11 WM Session Management (for bare X11 window managers)
+12) # X11 WM Session Management (for bare X11 window managers)
     WM_COUNT=$(echo "$DE_CHOICES" | wc -w)
     # Only relevant if user picked X11 WMs and X11 is available
     if [ "$XSERVER_CHOICE" = "xlibre" ] || [ "$XSERVER_CHOICE" = "xorg" ]; then
@@ -698,13 +697,13 @@ case "$STEP" in
                 # Single WM - create .xinitrc with that WM
                 WM_SINGLE="$DE_CHOICES"
                 whiptail --title "$TITLE" --msgbox \
-                    "X11 Session Setup  [12.5/$STEP_MAX]\n\nYou selected: $WM_SINGLE\n\nWill create .xinitrc to start with:\n  dbus-run-session $WM_SINGLE\n\nYou can start X with: startx" \
-                    11 70
+                    "X11 Session Setup  [12/$STEP_MAX]\n\nYou selected: $WM_SINGLE\n\nWill create .xinitrc to start with: startx" \
+                    10 70
                 USE_LIGHTDM=0
             else
                 # Multiple WMs - ask user preference
                 _display=$(whiptail --title "$TITLE" --menu \
-                    "X11 Session Manager  [12.5/$STEP_MAX]\n\nYou selected multiple window managers.\nHow do you want to start X11?" 14 70 2 \
+                    "X11 Session Manager  [12/$STEP_MAX]\n\nYou selected multiple window managers.\nHow do you want to start X11?" 14 70 2 \
                     "startx"   "Use startx — select WM at login" \
                     "lightdm"  "Use LightDM — graphical login with WM selection" \
                     3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
@@ -718,7 +717,7 @@ case "$STEP" in
                     USE_LIGHTDM=0
                     # Ask for primary WM
                     _primary=$(whiptail --title "$TITLE" --menu \
-                        "Primary Window Manager  [12.5/$STEP_MAX]\n\nSelect your default WM when using startx:" 13 70 10 \
+                        "Primary Window Manager  [12/$STEP_MAX]\n\nSelect your default WM when using startx:" 13 70 10 \
                         $(echo "$DE_CHOICES" | tr ' ' '\n' | head -10 | sed 's/\(.*\)/\1 "\1"/' | tr '\n' ' ') \
                         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
                     PRIMARY_WM="$_primary"
@@ -735,7 +734,7 @@ case "$STEP" in
 
 13) # Extra repos
     _repos=$(whiptail --title "$TITLE" --checklist \
-        "Extra Repositories  [13/$STEP_MAX]" \
+        "Extra Repositories  [14/$STEP_MAX]" \
         14 72 4 \
         "multilib"  "lib32 — Steam, Wine, 32-bit apps"              OFF \
         "arch"      "Arch [extra] — wider package selection"        OFF \
@@ -1632,149 +1631,6 @@ EOF
     mkdir -p /mnt/etc/sudoers.d
     printf '%%wheel ALL=(ALL:ALL) NOPASSWD: /usr/bin/pacman\n' > /mnt/etc/sudoers.d/pacman
     chmod 440 /mnt/etc/sudoers.d/pacman
-fi
-
-# Apply WM riced dotfiles if requested
-if [ "$RICE_WM" = "1" ]; then
-    echo "==> Setting up riced WM dotfiles..."
-    # Create minimal config directories
-    mkdir -p /mnt/home/"$USERNAME"/.config/{i3,openbox,bspwm,rofi,polybar}
-    
-    # Detect which WM was chosen and apply appropriate config
-    if echo "$DE_CHOICES" | grep -qw "i3"; then
-        # Basic i3 config
-        cat > /mnt/home/"$USERNAME"/.config/i3/config << 'I3CONFIG'
-set $mod Mod1
-set $term xterm
-set $menu rofi -show run -display-run "❯ " -display-window "⊟ "
-
-# Use Font for window titles
-font pango:monospace 8
-
-# Use Mouse+$mod to drag floating windows
-floating_modifier $mod
-
-# Start a terminal
-bindsym $mod+Return exec $term
-
-# Kill focused window
-bindsym $mod+Shift+q kill
-
-# Start launcher
-bindsym $mod+d exec $menu
-
-# Change focus
-bindsym $mod+h focus left
-bindsym $mod+j focus down
-bindsym $mod+k focus up
-bindsym $mod+l focus right
-
-# Move window
-bindsym $mod+Shift+h move left
-bindsym $mod+Shift+j move down
-bindsym $mod+Shift+k move up
-bindsym $mod+Shift+l move right
-
-# Split
-bindsym $mod+z split h
-bindsym $mod+v split v
-
-# Layout
-bindsym $mod+w layout tabbed
-bindsym $mod+e layout toggle split
-
-# Fullscreen
-bindsym $mod+f fullscreen
-
-# Floating
-bindsym $mod+space floating toggle
-bindsym $mod+shift+space focus mode_toggle
-
-# Workspaces
-bindsym $mod+1 workspace number 1
-bindsym $mod+2 workspace number 2
-bindsym $mod+3 workspace number 3
-bindsym $mod+4 workspace number 4
-bindsym $mod+5 workspace number 5
-bindsym $mod+6 workspace number 6
-bindsym $mod+7 workspace number 7
-bindsym $mod+8 workspace number 8
-bindsym $mod+9 workspace number 9
-bindsym $mod+0 workspace number 10
-
-bindsym $mod+shift+1 move container to workspace number 1
-bindsym $mod+shift+2 move container to workspace number 2
-bindsym $mod+shift+3 move container to workspace number 3
-bindsym $mod+shift+4 move container to workspace number 4
-bindsym $mod+shift+5 move container to workspace number 5
-bindsym $mod+shift+6 move container to workspace number 6
-bindsym $mod+shift+7 move container to workspace number 7
-bindsym $mod+shift+8 move container to workspace number 8
-bindsym $mod+shift+9 move container to workspace number 9
-bindsym $mod+shift+0 move container to workspace number 10
-
-# Reload/restart
-bindsym $mod+shift+c reload
-bindsym $mod+shift+r restart
-
-# Exit
-bindsym $mod+shift+e exec "i3-nagbar -t warning -m 'Exit i3?' -b 'Yes' 'i3-msg exit'"
-
-# Resize
-mode "resize" {
-    bindsym h resize shrink width 10 px or 10 ppt
-    bindsym k resize grow height 10 px or 10 ppt
-    bindsym j resize shrink height 10 px or 10 ppt
-    bindsym l resize grow width 10 px or 10 ppt
-    bindsym Return mode "default"
-    bindsym Escape mode "default"
-}
-bindsym $mod+r mode "resize"
-
-# Theme
-client.focused          #4c7899 #285577 #ffffff #2e9ef4   #285577
-client.focused_inactive #333333 #5f676e #ffffff #484e50   #5f676e
-client.unfocused        #333333 #222222 #888888 #292d2e   #222222
-client.urgent           #2f343a #900000 #ffffff #900000   #900000
-client.placeholder      #000000 #0c0c0c #ffffff #000000   #0c0c0c
-
-# Status bar
-bar {
-    status_command i3status
-    position top
-}
-I3CONFIG
-        chown "$USER_UID:$USER_GID" /mnt/home/"$USERNAME"/.config/i3/config
-    elif echo "$DE_CHOICES" | grep -qw "Openbox"; then
-        # Basic openbox notes
-        cat > /mnt/home/"$USERNAME"/.config/openbox/README.txt << 'OBREADME'
-Openbox Configuration
-=====================
-Edit the following files in ~/.config/openbox/:
-- rc.xml: Keybinds, mouse button actions, themes
-- autostart: Startup programs
-
-Start your status bar/panel here or in .xinitrc
-
-Example: picom (compositor), tint2 (panel), rofi (menu)
-OBREADME
-        chown "$USER_UID:$USER_GID" /mnt/home/"$USERNAME"/.config/openbox/README.txt
-    elif echo "$DE_CHOICES" | grep -qw "Fluxbox"; then
-        # Basic fluxbox notes
-        cat > /mnt/home/"$USERNAME"/.fluxbox/README.txt << 'FBREADME'
-Fluxbox Configuration
-=====================
-Main config files in ~/.fluxbox/:
-- init: Main configuration
-- keys: Keybinds
-- menu: Right-click menu
-
-See /usr/share/fluxbox/ for examples and themes
-FBREADME
-        chown "$USER_UID:$USER_GID" /mnt/home/"$USERNAME"/.fluxbox/README.txt
-    fi
-    
-    echo "==> WM dotfiles applied. Customize in ~/.config/ or ~/.fluxbox/ after login."
 fi
 
 # xdg dirs — create standard dirs directly, avoids chroot session issues

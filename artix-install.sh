@@ -825,16 +825,19 @@ if [ "$ENCRYPT" = "1" ]; then
     # zstd mkinitcpio builds fail in some chroot environments — gzip is universal
     sed -i 's/^#*COMPRESSION=.*/COMPRESSION="gzip"/' /mnt/etc/mkinitcpio.conf
     grep -q '^COMPRESSION=' /mnt/etc/mkinitcpio.conf || echo 'COMPRESSION="gzip"' >> /mnt/etc/mkinitcpio.conf
+    # Set HOOKS before installing cryptsetup so the pacman post-hook builds a
+    # correct initramfs. consolefont is omitted — no font is configured at this
+    # stage (vconsole.conf is written later) and mkinitcpio 41+ errors on it.
+    sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf kms keyboard keymap block encrypt filesystems fsck)/' /mnt/etc/mkinitcpio.conf
+    # Pin btrfs module so autodetect can't filter it out in a chroot environment
+    [ "$FS" = "btrfs" ] && \
+        sed -i 's/^MODULES=.*/MODULES=(btrfs)/' /mnt/etc/mkinitcpio.conf
     # Ensure cryptsetup is in the installed system
     artix-chroot /mnt pacman -S --noconfirm cryptsetup
     # crypttab — maps cryptroot on boot
     LUKS_UUID=$(blkid -s UUID -o value "$REAL_ROOT")
     echo "cryptroot UUID=$LUKS_UUID none luks" >> /mnt/etc/crypttab
-
-    # Add encrypt hook to mkinitcpio
-    sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block encrypt filesystems fsck)/' /mnt/etc/mkinitcpio.conf
     artix-chroot /mnt mkinitcpio -P
-
     # Store LUKS UUID for bootloader cmdline
     LUKS_CMDLINE="cryptdevice=UUID=$LUKS_UUID:cryptroot root=/dev/mapper/cryptroot"
 fi
@@ -1536,7 +1539,7 @@ case "$BOOT" in
         [ "$DUALBOOT" = "1" ] && { umount /mnt/sys /mnt/proc /mnt/dev 2>/dev/null || true; }
         ;;
     limine)
-        artix-chroot /mnt pacman -S --noconfirm limine efibootmgr
+        artix-chroot /mnt pacman -S --noconfirm limine efibootmgr limine-mkinitcpio-hook limine-snapper-sync
 
         # Get the EFI partition number from its device path
         EFI_PART_NUM=$(echo "$EFI" | grep -o '[0-9]*$')

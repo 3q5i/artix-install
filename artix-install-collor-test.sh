@@ -63,6 +63,9 @@ disentry=white,black
 declare -A PART_FS
 EXTRA_MOUNTS=()
 
+# fs_key: sanitize a device path to use as assoc array key (/dev/sda1 -> dev_sda1)
+fs_key() { echo "${1//\//_}" | sed 's/^_//'; }
+
 # =========================
 # TEST / FAST MODE
 # =========================
@@ -97,6 +100,7 @@ if [ "${1:-}" = "--test" ]; then
     ENABLE_ARCH=0
     ENABLE_GALAXY=0
     ENABLE_CACHYOS=0
+    BTRFS_SNAPSHOTS=0
     # partition layout
     RICE_WM=0
     [[ "$DISK" =~ (nvme|mmcblk) ]] && P="p" || P=""
@@ -193,6 +197,7 @@ MULTILIB=0
 ENABLE_ARCH=0
 ENABLE_GALAXY=0
 ENABLE_CACHYOS=0
+BTRFS_SNAPSHOTS=0
 
 RICE_WM=0
 RAM_HALF_GB=$(( (RAM_KB / 1024 / 1024 + 1) / 2 ))
@@ -227,7 +232,17 @@ case "$STEP" in
         "jfs"   "JFS — IBM journaled FS, low CPU usage" \
         "nilfs2" "NILFS2 — continuous snapshotting" \
         3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
-    FS="$_v"; STEP=$(( STEP + 1 )) ;;
+    FS="$_v"
+    if [ "$FS" = "btrfs" ]; then
+        if whiptail --title "$TITLE" --yesno \
+            "Enable btrfs snapshots?  [3/$STEP_MAX]\n\nInstalls snapper + snap-pac.\nAuto-snapshots before pacman upgrades.\nAdds snapshot entries to the boot menu." \
+            11 65; then
+            BTRFS_SNAPSHOTS=1
+        else
+            BTRFS_SNAPSHOTS=0
+        fi
+    fi
+    STEP=$(( STEP + 1 )) ;;
 
 4) # Swap
     _v=$(whiptail --title "$TITLE" --menu "Swap  [4/$STEP_MAX]" 14 65 5 \
@@ -785,9 +800,6 @@ if [ "$ENCRYPT" = "1" ]; then
     PART_FS["$(fs_key "$ROOT")"]="${PART_FS[$(fs_key "$REAL_ROOT")]:-$FS}"
 fi
 
-# fs_key: sanitize a device path to use as assoc array key (/dev/sda1 -> dev_sda1)
-fs_key() { echo "${1//\//_}" | sed 's/^_//'; }
-
 # format_part <device> <fstype>
 format_part() {
     local _dev="$1" _fs="${2:-ext4}"
@@ -841,7 +853,26 @@ if [ "$_root_fs" = "zfs" ]; then
 else
     ZFS_ROOT=0
     format_part "$ROOT" "$_root_fs"
-    mount "$ROOT" /mnt
+    if [ "$_root_fs" = "btrfs" ]; then
+        mount "$ROOT" /mnt
+        btrfs subvolume create /mnt/@
+        btrfs subvolume create /mnt/@home
+        btrfs subvolume create /mnt/@var
+        btrfs subvolume create /mnt/@cache
+        [ "$BTRFS_SNAPSHOTS" = "1" ] && btrfs subvolume create /mnt/@snapshots
+        umount /mnt
+        mount -o subvol=@,compress=zstd,noatime "$ROOT" /mnt
+        mkdir -p /mnt/{home,var,var/cache}
+        mount -o subvol=@home,compress=zstd,noatime "$ROOT" /mnt/home
+        mount -o subvol=@var,compress=zstd,noatime "$ROOT" /mnt/var
+        mount -o subvol=@cache,compress=zstd,noatime,nodatacow "$ROOT" /mnt/var/cache
+        if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
+            mkdir -p /mnt/.snapshots
+            mount -o subvol=@snapshots,compress=zstd,noatime "$ROOT" /mnt/.snapshots
+        fi
+    else
+        mount "$ROOT" /mnt
+    fi
 fi
 
 mkdir -p /mnt/boot
@@ -1036,6 +1067,11 @@ gauge 20 "Installing base system (this takes a while)..."
 # =========================
 # BASESTRAP
 # =========================
+[ "$FS" = "btrfs" ] && EXTRA_PKGS="btrfs-progs $EXTRA_PKGS"
+if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
+    EXTRA_PKGS="snapper snap-pac $(svc_pkg snapper) $EXTRA_PKGS"
+fi
+
 _do_basestrap() {
     local _k="$1"
     basestrap /mnt \
@@ -1079,6 +1115,9 @@ fi
 
 # Encryption setup inside installed system
 if [ "$ENCRYPT" = "1" ]; then
+    # zstd mkinitcpio builds fail in some chroot environments — gzip is universal
+    sed -i 's/^#*COMPRESSION=.*/COMPRESSION="gzip"/' /mnt/etc/mkinitcpio.conf
+    grep -q '^COMPRESSION=' /mnt/etc/mkinitcpio.conf || echo 'COMPRESSION="gzip"' >> /mnt/etc/mkinitcpio.conf
     # Ensure cryptsetup is in the installed system
     artix-chroot /mnt pacman -S --noconfirm cryptsetup
     # crypttab — maps cryptroot on boot
@@ -1091,6 +1130,16 @@ if [ "$ENCRYPT" = "1" ]; then
 
     # Store LUKS UUID for bootloader cmdline
     LUKS_CMDLINE="cryptdevice=UUID=$LUKS_UUID:cryptroot root=/dev/mapper/cryptroot"
+fi
+
+if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
+    artix-chroot /mnt snapper -c root create-config /
+    sed -i 's/^TIMELINE_CREATE=.*/TIMELINE_CREATE="yes"/' /mnt/etc/snapper/configs/root
+    sed -i 's/^TIMELINE_CLEANUP=.*/TIMELINE_CLEANUP="yes"/' /mnt/etc/snapper/configs/root
+    sed -i 's/^SUBVOLUME=.*/SUBVOLUME="\/\.snapshots"/' /mnt/etc/snapper/configs/root 2>/dev/null || true
+    sed -i 's/^EXCLUDE_PATTERNS=.*/EXCLUDE_PATTERNS=("\/\.snapshots" "\/var\/cache")/' /mnt/etc/snapper/configs/root 2>/dev/null || true
+    svc_enable snapper-timeline
+    svc_enable snapper-cleanup
 fi
 
 # pacman tweaks
@@ -1951,6 +2000,21 @@ case "$BOOT" in
             sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$GRUB_LUKS\"|" /mnt/etc/default/grub
             sed -i 's/^#GRUB_ENABLE_CRYPTODISK=.*/GRUB_ENABLE_CRYPTODISK=y/' /mnt/etc/default/grub
         fi
+        if [ "$FS" = "btrfs" ]; then
+            grep -q 'GRUB_PRELOAD_MODULES' /mnt/etc/default/grub \
+                && sed -i 's/^GRUB_PRELOAD_MODULES=.*/GRUB_PRELOAD_MODULES="btrfs"/' /mnt/etc/default/grub \
+                || echo 'GRUB_PRELOAD_MODULES="btrfs"' >> /mnt/etc/default/grub
+            if [ "$ENCRYPT" = "1" ]; then
+                GRUB_LUKS="$GRUB_LUKS rootflags=subvol=@"
+                sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$GRUB_LUKS\"|" /mnt/etc/default/grub
+            else
+                sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 rootflags=subvol=@"/' /mnt/etc/default/grub
+            fi
+            if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
+                artix-chroot /mnt pacman -S --noconfirm grub-btrfs
+                svc_enable grub-btrfsd
+            fi
+        fi
         artix-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
         # Unmount bind mounts used by os-prober
         [ "$DUALBOOT" = "1" ] && { umount /mnt/sys /mnt/proc /mnt/dev 2>/dev/null || true; }
@@ -1984,6 +2048,7 @@ case "$BOOT" in
             ROOT_UUID=$(blkid -s UUID -o value "$ROOT")
             LIMINE_CMDLINE="root=UUID=$ROOT_UUID rw quiet"
         fi
+        [ "$FS" = "btrfs" ] && LIMINE_CMDLINE="$LIMINE_CMDLINE rootflags=subvol=@"
 
         # Limine config — key names from official CONFIG.md
         # protocol, path, cmdline, module_path (NOT kernel_path/kernel_cmdline)
@@ -1998,6 +2063,34 @@ verbose: no
     module_path: boot():/${UCODE}.img
     module_path: boot():/initramfs-$FIRST_KERNEL.img
 EOF
+
+        if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
+            cat > /mnt/usr/local/bin/limine-snapshot-update << 'LSCRIPT'
+#!/bin/bash
+CONF=/boot/limine.conf
+sed -i '/^\/Artix Linux (Snapshot/,/^$/d' "$CONF"
+find /.snapshots -maxdepth 2 -name info.xml 2>/dev/null | sort -rV | head -10 | while read -r xml; do
+    num=$(basename "$(dirname "$xml")")
+    date=$(grep -oP '(?<=<date>)[^<]+' "$xml" | head -1)
+    desc=$(grep -oP '(?<=<description>)[^<]+' "$xml" | head -1)
+    label="${date:-snapshot} ${desc:+(${desc})}"
+    cmdline=$(grep -oP '(?<=cmdline: ).*' "$CONF" | head -1 | sed "s|subvol=@[^ ]*|subvol=@snapshots/$num/snapshot|")
+    printf '\n/Artix Linux (Snapshot %s — %s)\n' "$num" "$label"
+    printf '    protocol: linux\n'
+    printf '    path: boot():/vmlinuz-linux\n'
+    printf '    cmdline: %s\n' "$cmdline"
+    printf '    module_path: boot():/initramfs-linux.img\n'
+done >> "$CONF"
+LSCRIPT
+            chmod +x /mnt/usr/local/bin/limine-snapshot-update
+
+            mkdir -p /mnt/etc/snapper/hooks/post
+            cat > /mnt/etc/snapper/hooks/post/limine-snapshot-update << 'HOOK'
+#!/bin/bash
+/usr/local/bin/limine-snapshot-update
+HOOK
+            chmod +x /mnt/etc/snapper/hooks/post/limine-snapshot-update
+        fi
         ;;
     refind)
         artix-chroot /mnt pacman -S --noconfirm refind efibootmgr
@@ -2012,12 +2105,32 @@ EOF
         ROOT_UUID=$(blkid -s UUID -o value "${REAL_ROOT:-$ROOT}")
         # Build initrd line with microcode first, then initramfs
         _INITRD="initrd=/${UCODE}.img initrd=/initramfs-$FIRST_KERNEL.img"
+        _btrfs_flag=""
+        [ "$FS" = "btrfs" ] && _btrfs_flag=" rootflags=subvol=@"
+
         if [ "$ENCRYPT" = "1" ]; then
-            printf '"Boot with standard options"  "%s root=/dev/mapper/cryptroot rw quiet %s"\n' \
-                "$LUKS_CMDLINE" "$_INITRD" > /mnt/boot/refind_linux.conf
+            printf '"Boot with standard options"  "%s root=/dev/mapper/cryptroot rw quiet%s %s"\n' \
+                "$LUKS_CMDLINE" "$_btrfs_flag" "$_INITRD" > /mnt/boot/refind_linux.conf
         else
-            printf '"Boot with standard options"  "root=UUID=%s rw quiet %s"\n"Boot to terminal"            "root=UUID=%s rw init=/sbin/$INIT %s"\n"Boot with minimal options"   "root=UUID=%s rw %s"\n' \
-                "$ROOT_UUID" "$_INITRD" "$ROOT_UUID" "$_INITRD" "$ROOT_UUID" "$_INITRD" > /mnt/boot/refind_linux.conf
+            printf '"Boot with standard options"  "root=UUID=%s rw quiet%s %s"\n"Boot to terminal"            "root=UUID=%s rw init=/sbin/$INIT%s %s"\n"Boot with minimal options"   "root=UUID=%s rw%s %s"\n' \
+                "$ROOT_UUID" "$_btrfs_flag" "$_INITRD" "$ROOT_UUID" "$_btrfs_flag" "$_INITRD" "$ROOT_UUID" "$_btrfs_flag" "$_INITRD" > /mnt/boot/refind_linux.conf
+        fi
+
+        if [ "$BTRFS_SNAPSHOTS" = "1" ]; then
+            mkdir -p /mnt/etc/snapper/hooks/post
+            cat > /mnt/etc/snapper/hooks/post/refind-snapshot-update << 'HOOK'
+#!/bin/bash
+CONF=/boot/refind_linux.conf
+sed -i '/Snapshot [0-9]/d' "$CONF"
+find /.snapshots -maxdepth 2 -name info.xml 2>/dev/null | sort -rV | head -10 | while read -r xml; do
+    num=$(basename "$(dirname "$xml")")
+    date=$(grep -oP '(?<=<date>)[^<]+' "$xml" | head -1)
+    root_uuid=$(findmnt -no UUID / 2>/dev/null)
+    printf '"Snapshot %s (%s)"  "root=UUID=%s rw rootflags=subvol=@snapshots/%s/snapshot quiet"\n' \
+        "$num" "$date" "$root_uuid" "$num" >> "$CONF"
+done
+HOOK
+            chmod +x /mnt/etc/snapper/hooks/post/refind-snapshot-update
         fi
         ;;
 esac

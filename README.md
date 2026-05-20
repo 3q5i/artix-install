@@ -37,10 +37,10 @@ The official installer gives you a working system. This one gives you *your* sys
 ### Testing (on top of the stuff in stable of course)
 | Category | Options |
 |---|---|
-| **AUR**(testing) | yay |
-| **Greeters**(testing) | none, sddm, lightdm, tuigreet, regreet, nwg-hello, |
-| **Repos**(testing) | multilib, Arch, CachyOS, Galaxy |
-| **Shell**(testing) | bash, zsh, fish, sh |
+| **AUR** | yay |
+| **Greeters** | none, sddm, lightdm, tuigreet, regreet, nwg-hello, |
+| **Repos** | multilib, Arch, CachyOS, Galaxy |
+| **Shell** | bash, zsh, fish, sh |
 | **DE / WM** | KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, IceWM, Fluxbox · sway, bspwm, labwc, niri. wayfire, herbslutwm |
 ---
 

@@ -25,7 +25,7 @@ The official installer gives you a working system. This one gives you *your* sys
 | **Swap** | zram, swapfile, both, or none |
 | **Hardware** | Firmware, GPU drivers |
 | **Locale** | keyboard layout, locale, timezone |
-| **Audio** | PipeWire, PulseAudio, ALSA |
+| **Audio** | PipeWire |
 | **Mirrors** | auto-picks fastest on install |
 | **Privilege escalation** | doas or sudo |
 | **X11 server** | Xorg or XLibre |
@@ -42,6 +42,7 @@ The official installer gives you a working system. This one gives you *your* sys
 | **Repos** | multilib, Arch, CachyOS, Galaxy |
 | **Shell** | bash, zsh, fish, sh |
 | **DE / WM** | KDE Plasma, XFCE, LXQt, Hyprland, Moksha, i3, XMonad, IceWM, Fluxbox · sway, bspwm, labwc, niri. wayfire, herbslutwm |
+| **Audio** | PipeWire, PulseAudio, ALSA |
 ---
 
 ## Known issues

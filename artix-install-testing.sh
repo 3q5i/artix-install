@@ -7,9 +7,9 @@ set -o pipefail
 
 # Enhanced error handler with context
 trap 'echo ""
-       echo "╔═══════════════════════════════════════════════╗"
-       echo "║         INSTALLATION FAILED                   ║"
-       echo "╚═══════════════════════════════════════════════╝"
+       echo "╔═════════════════════════════════════╗"
+       echo "║         INSTALLATION FAILED         ║"
+       echo "╚═════════════════════════════════════╝"
        echo ""
        echo "Error at line $LINENO"
        echo "Last command: $BASH_COMMAND"
@@ -142,7 +142,6 @@ pick_fs() {
 }
 
 # =========================
-# =========================
 # INIT SYSTEM
 # =========================
 RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
@@ -152,7 +151,7 @@ if [ "$TEST_MODE" = "0" ]; then
 # Step-based Q&A with back navigation
 # Each step sets variables; pressing Cancel goes back one step
 STEP=1
-STEP_MAX=13
+STEP_MAX=14
 
 # defaults (overwritten by each step)
 INIT="dinit"
@@ -642,82 +641,6 @@ case "$STEP" in
                 GPU="$GPU broadcom-wl-dkms"
             fi
         fi
-    fi
-    
-    # Audio daemon choice (only if desktop DE selected)
-    if [ "$INSTALL_TYPE" = "DE" ] && echo "$DE_CHOICES" | grep -qvE "CLI"; then
-        _v=$(whiptail --title "$TITLE" --menu \
-            "Audio Daemon  [10/$STEP_MAX]\n\nSelect audio server for sound handling:" 13 70 3 \
-            "pipewire"   "PipeWire — modern, low-latency (recommended)" \
-            "pulseaudio" "PulseAudio — traditional, widely compatible" \
-            "alsa"       "ALSA only — minimal, no daemon" \
-            3>&1 1>&2 2>&3) || { STEP=$(( STEP - 1 )); continue; }
-        AUDIO_DAEMON="$_v"
-    else
-        AUDIO_DAEMON="none"
-    fi
-    
-    # Intel WiFi (iwlwifi)
-    if lspci 2>/dev/null | grep -qi "intel.*wireless\|iwlwifi"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # Qualcomm/Atheros WiFi
-    if lspci 2>/dev/null | grep -qi "qualcomm\|atheros.*wireless\|ath9k\|ath10k"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # Realtek WiFi/Ethernet
-    if lspci 2>/dev/null | grep -qi "realtek.*wireless\|rtl.*\|r8"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # NVIDIA GPU firmware (nouveau, nvenc)
-    if lspci 2>/dev/null | grep -qi "nvidia.*vga\|nvidia.*3d"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # AMD/ATI GPU firmware
-    if lspci 2>/dev/null | grep -qi "amd.*vga\|ati.*vga\|radeon"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # Sound cards that need firmware
-    if lspci 2>/dev/null | grep -qi "sigmatel\|cirrus\|conexant"; then
-        _fw_pkgs="$_fw_pkgs linux-firmware"
-    fi
-    
-    # Add detected firmware packages to GPU string (will be installed with GPU)
-    if [ -n "$_fw_pkgs" ]; then
-        _detected=$(echo "$_fw_pkgs" | xargs -n1 | sort -u | tr '\n' ' ')
-        if whiptail --title "$TITLE" --yesno \
-            "Firmware Detected\n\nAuto-detected hardware firmware needed:\n$_detected\n\nInstall?" \
-            11 70; then
-            GPU="$GPU $_detected"
-        fi
-    fi
-    
-    # Detect other useful packages based on hardware
-    _extra_pkgs=""
-    
-    # RAID/LVM detection
-    if lsblk 2>/dev/null | grep -qi "raid\|dm-"; then
-        _extra_pkgs="$_extra_pkgs mdadm lvm2"
-    fi
-    
-    # NVMe-specific tools
-    if lsblk 2>/dev/null | grep -qi "nvme"; then
-        _extra_pkgs="$_extra_pkgs nvme-cli"
-    fi
-    
-    # Encryption utilities already included if ENCRYPT=1, but ensure cryptsetup
-    if [ "$ENCRYPT" = "1" ]; then
-        _extra_pkgs="$_extra_pkgs cryptsetup"
-    fi
-    
-    # Add to basestrap if any detected
-    if [ -n "$_extra_pkgs" ]; then
-        EXTRA_PKGS=$(echo "$_extra_pkgs" | xargs -n1 | sort -u | tr '\n' ' ')
     fi
     
     # Audio daemon choice (only if desktop DE selected)
@@ -1299,7 +1222,7 @@ fi
 
 # icewm doesnt need mesa/llvm so skip gpu entirely to save ~200mb
 BARE_WM_ONLY=1
-for _de in Plasma XFCE LXQt Moksha Hyprland i3 XMonad Openbox Fluxbox; do
+for _de in Plasma XFCE LXQt Moksha Hyprland Sway niri river wayfire labwc bspwm herbstluftwm dwm i3 XMonad Openbox Fluxbox; do
     echo "$DE_CHOICES" | grep -qw "$_de" && BARE_WM_ONLY=0 && break
 done
 [ "$DE_CHOICES" = "CLI" ] && BARE_WM_ONLY=0
@@ -1735,11 +1658,8 @@ chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"
 # =========================
 # PIPEWIRE AUTOSTART (only for DEs that use audio)
 # =========================
-AUDIO_DES_CHECK="Plasma XFCE LXQt Moksha Cosmic Hyprland"
 NEED_AUDIO=0
-for _de in $AUDIO_DES_CHECK; do
-    echo "$DE_CHOICES" | grep -qw "$_de" && NEED_AUDIO=1 && break
-done
+[ "$INSTALL_TYPE" = "DE" ] && [ "$AUDIO_DAEMON" != "none" ] && [ "$AUDIO_DAEMON" != "alsa" ] && NEED_AUDIO=1
 
 mkdir -p /mnt/usr/local/bin
 if [ "$NEED_AUDIO" = "1" ] && [ "$AUDIO_DAEMON" = "pipewire" ]; then
@@ -2011,7 +1931,7 @@ for DE in $DE_CHOICES; do
             artix-chroot /mnt pacman -S --noconfirm hyprland xdg-desktop-portal-hyprland || { _de_ok=0; }
             if [ "$_de_ok" = "1" ]; then
                 mkdir -p /mnt/home/"$USERNAME"/.config/hypr
-                cat >> /mnt/home/"$USERNAME"/.config/hypr/hyprland.conf << 'HYPREOF'
+                cat >> /mnt/home/"$USERNAME"/.config/hypr/hyprland.conf << HYPREOF
 $([ "$AUDIO_DAEMON" = "pipewire" ] && echo "exec-once = /usr/local/bin/start-pipewire")
 HYPREOF
                 chown -R "${USER_UID}:${USER_GID}" /mnt/home/"$USERNAME"/.config/hypr
@@ -2527,17 +2447,16 @@ esac
 
 gauge 100 "Installation complete!"
 
-# Unmount filesystems before final menu to prevent lockups
-umount -R /mnt 2>/dev/null || true
-
-# No AUR helper - users can install manually if needed
-
+# No AUR helper in most repos - users can install manually if needed
 # Install yay from CachyOS repo if CachyOS is enabled
 if [ "$ENABLE_CACHYOS" = "1" ] || echo "$KERNEL_CHOICES" | grep -qw "linux-cachyos"; then
     echo "==> Installing yay from CachyOS repo..."
     artix-chroot /mnt pacman -S --noconfirm yay 2>/dev/null || \
         echo "==> Warning: yay not found in CachyOS repo — install manually after boot"
 fi
+# Unmount filesystems before final menu to prevent lockups
+umount -R /mnt 2>/dev/null || true
+
 
 _end=$(whiptail --title "$TITLE" --menu \
     "Installation complete!\n\nWhat would you like to do?" \
